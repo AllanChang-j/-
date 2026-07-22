@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import re
 import shutil
+import urllib.error
 from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
@@ -84,6 +85,12 @@ ESB_COLUMNS = [
     "進度日期",
     "上市櫃進度",
 ]
+
+TEXT_COLUMNS_BY_MARKET = {
+    "listed": {1, 2, 10},
+    "mainboard": {1, 2},
+    "esb": {1, 2, 12, 13, 15, 16},
+}
 
 
 @dataclass(frozen=True)
@@ -186,6 +193,31 @@ def clean_cell(value: Any) -> Any:
     return text
 
 
+def coerce_number(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    text = str(value).strip().replace(",", "")
+    if text in {"", "--", "---", "-"}:
+        return None
+    if not re.fullmatch(r"[+-]?\d+(?:\.\d+)?", text):
+        return value
+    number = float(text)
+    return int(number) if number.is_integer() else number
+
+
+def coerce_template_row(market: str, values: list[Any]) -> list[Any]:
+    text_columns = TEXT_COLUMNS_BY_MARKET[market]
+    typed_values: list[Any] = []
+    for index, value in enumerate(values, start=1):
+        if index in text_columns:
+            typed_values.append(None if value is None else str(value).strip())
+        else:
+            typed_values.append(coerce_number(value))
+    return typed_values
+
+
 def find_twse_rows(payload: dict[str, Any]) -> tuple[list[str], list[list[Any]]]:
     candidates: list[tuple[int, list[str], list[list[Any]]]] = []
     for table in payload.get("tables", []):
@@ -272,7 +304,15 @@ def parse_csv_rows(text: str) -> list[dict[str, Any]]:
 
 
 def source_rows(source: SourceConfig) -> list[dict[str, Any]]:
-    text = fetch_text_with_method(source.url, source.method, source.body)
+    try:
+        text = fetch_text_with_method(source.url, source.method, source.body)
+    except urllib.error.URLError as exc:
+        detail = exc.reason if hasattr(exc, "reason") else exc
+        raise RuntimeError(
+            f"{source.label} 資料來源連線失敗：{source.url}\n"
+            f"請先確認網路/DNS 可連線，或用瀏覽器打開來源頁確認網站是否正常。\n"
+            f"原始錯誤：{detail}"
+        ) from exc
     if source.fmt.lower() == "csv":
         return parse_csv_rows(text)
     return parse_json_rows(source, text)
@@ -302,7 +342,7 @@ def pick(row: dict[str, Any], *names: str) -> Any:
 
 def to_template_row(market: str, row: dict[str, Any]) -> list[Any]:
     if market == "listed":
-        return [
+        return coerce_template_row(market, [
             pick(row, "證券代號"),
             pick(row, "證券名稱"),
             pick(row, "成交股數"),
@@ -319,9 +359,9 @@ def to_template_row(market: str, row: dict[str, Any]) -> list[Any]:
             pick(row, "最後揭示賣價"),
             pick(row, "最後揭示賣量"),
             pick(row, "本益比"),
-        ]
+        ])
     if market == "mainboard":
-        return [
+        return coerce_template_row(market, [
             pick(row, "代號", "SecuritiesCompanyCode"),
             pick(row, "名稱", "CompanyName"),
             pick(row, "收盤", "Close"),
@@ -339,9 +379,9 @@ def to_template_row(market: str, row: dict[str, Any]) -> list[Any]:
             pick(row, "發行股數", "Capitals"),
             pick(row, "次日漲停價", "NextLimitUp"),
             pick(row, "次日跌停價", "NextLimitDown"),
-        ]
+        ])
     if market == "esb":
-        return [
+        return coerce_template_row(market, [
             pick(row, "代號", "SecuritiesCompanyCode"),
             pick(row, "名稱", "CompanyName"),
             pick(row, "前日均價", "PreviousAveragePrice"),
@@ -358,7 +398,7 @@ def to_template_row(market: str, row: dict[str, Any]) -> list[Any]:
             pick(row, "成交量", "TransactionVolume"),
             pick(row, "進度日期", "ApplyingDate"),
             pick(row, "上市櫃進度", "ApplyingStatus"),
-        ]
+        ])
     raise ValueError(f"未知市場：{market}")
 
 
