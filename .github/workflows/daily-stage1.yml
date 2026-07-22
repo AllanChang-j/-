@@ -1,0 +1,54 @@
+name: Daily Stage 1 Close Report
+
+on:
+  schedule:
+    # 16:00 Asia/Taipei = 08:00 UTC. Weekdays only.
+    - cron: "0 8 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      trade_date:
+        description: "Optional trade date, YYYY-MM-DD. Leave blank for today in Asia/Taipei."
+        required: false
+        type: string
+
+jobs:
+  build-close-report:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Taipei
+      TEMPLATE_PATH: templates/base.xlsx
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Restore template workbook from secret
+        env:
+          STAGE1_TEMPLATE_BASE64: ${{ secrets.STAGE1_TEMPLATE_BASE64 }}
+        run: |
+          test -n "$STAGE1_TEMPLATE_BASE64"
+          mkdir -p templates
+          printf "%s" "$STAGE1_TEMPLATE_BASE64" | base64 --decode > "$TEMPLATE_PATH"
+
+      - name: Generate report
+        run: |
+          if [ -n "${{ inputs.trade_date }}" ]; then
+            python src/stage1_close_report.py --template "$TEMPLATE_PATH" --date "${{ inputs.trade_date }}"
+          else
+            python src/stage1_close_report.py --template "$TEMPLATE_PATH"
+          fi
+
+      - name: Upload generated workbook
+        uses: actions/upload-artifact@v4
+        with:
+          name: close-report-${{ github.run_id }}
+          path: outputs/**/*.xlsx
+          if-no-files-found: error

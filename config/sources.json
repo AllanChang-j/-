@@ -1,0 +1,47 @@
+{
+  "sources": {
+    "twse_listed": {
+      "market": "listed",
+      "label": "上市",
+      "format": "json",
+      "url": "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date={date_yyyymmdd}&type=ALLBUT0999&response=json",
+      "source_page": "https://www.twse.com.tw/zh/trading/historical/mi-index.html#table8",
+      "header_markers": ["證券代號", "證券名稱"]
+    },
+    "tpex_mainboard": {
+      "market": "mainboard",
+      "label": "上櫃",
+      "format": "json",
+      "method": "POST",
+      "url": "https://www.tpex.org.tw/www/zh-tw/afterTrading/otc",
+      "body": {
+        "date": "{date_roc_slash}",
+        "type": "EW",
+        "response": "json"
+      },
+      "source_page": "https://www.tpex.org.tw/zh-tw/mainboard/trading/info/mi-pricing.html?type=",
+      "header_markers": ["代號", "名稱"]
+    },
+    "tpex_esb": {
+      "market": "esb",
+      "label": "興櫃",
+      "format": "json",
+      "method": "POST",
+      "url": "https://www.tpex.org.tw/www/zh-tw/emerging/latest",
+      "body": {
+        "response": "json"
+      },
+      "historical": false,
+      "source_page": "https://www.tpex.org.tw/zh-tw/esb/trading/info/pricing.html",
+      "header_markers": ["代號", "名稱"]
+    }
+  },
+  "candidate_sources": {
+    "goodinfo": {
+      "label": "Goodinfo",
+      "url": "https://goodinfo.tw/tw/index.asp",
+      "stage": "phase2_phase3",
+      "notes": "候選來源；較適合基本面、產業、EPS、淨值、股利、營收等補充資料。第一階段每日收盤價量先以 TWSE/TPEx 官方來源為準。"
+    }
+  }
+}
