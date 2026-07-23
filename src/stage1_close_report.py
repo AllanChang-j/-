@@ -4,6 +4,7 @@ import argparse
 import csv
 import datetime as dt
 import json
+import os
 import re
 import shutil
 import ssl
@@ -114,13 +115,16 @@ class SourceConfig:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="更新既有收盤日報 Excel 範本。")
-    parser.add_argument("--template", required=True, help="原始 xlsx 範本路徑")
+    parser.add_argument("--template", default=os.environ.get("STAGE1_TEMPLATE"), help="原始 xlsx 範本路徑；也可用 STAGE1_TEMPLATE")
     parser.add_argument("--date", help="交易日，格式 YYYY-MM-DD；省略時使用今天")
-    parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="資料來源設定檔")
-    parser.add_argument("--output-dir", default=str(PROJECT_ROOT / "outputs"), help="輸出資料夾")
+    parser.add_argument("--config", default=os.environ.get("STAGE1_CONFIG", str(DEFAULT_CONFIG)), help="資料來源設定檔")
+    parser.add_argument("--output-dir", default=os.environ.get("STAGE1_OUTPUT_DIR", str(PROJECT_ROOT / "outputs")), help="輸出資料夾")
     parser.add_argument("--dry-run", action="store_true", help="只下載與檢查資料，不輸出 xlsx")
     parser.add_argument("--include-non-stock", action="store_true", help="保留非四碼股票代號商品")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.template:
+        parser.error("--template 或 STAGE1_TEMPLATE 必須提供原始 xlsx 範本路徑")
+    return args
 
 
 def roc_date_slash(day: dt.date) -> str:

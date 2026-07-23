@@ -40,6 +40,26 @@ python src/stage1_close_report.py \
 
 輸出檔會放在 `outputs/YYYYMMDD/`。
 
+也可以用環境變數指定路徑，方便在不同電腦或 Docker 裡使用：
+
+```bash
+export STAGE1_TEMPLATE="/Users/allanchang/Downloads/010.2026收盤日報資料整理0713.xlsx"
+export STAGE1_OUTPUT_DIR="./outputs"
+python src/stage1_close_report.py
+```
+
+指定日期測試：
+
+```bash
+python src/stage1_close_report.py --date 2026-07-21
+```
+
+只測資料來源、不產出 xlsx：
+
+```bash
+python src/stage1_close_report.py --date 2026-07-21 --dry-run
+```
+
 ## API 設定
 
 主要設定在 `config/sources.json`。等你確認官方 API 後，優先改這個檔案：
@@ -75,6 +95,49 @@ bash scripts/install_launchd.sh
 ```
 
 預設排程為週一至週五 17:30 執行。台股收盤資料通常要等交易所盤後資料發布後才會完整，如果來源延遲，可以把時間改晚。
+
+## Docker 使用
+
+Docker 適合在其他電腦、NAS、伺服器或排程環境穩定執行，避免 macOS Python / SSL / 套件版本差異。
+
+先把範本放到本機 `templates/base.xlsx`：
+
+```bash
+mkdir -p templates outputs
+cp "/Users/allanchang/Downloads/010.2026收盤日報資料整理0713.xlsx" templates/base.xlsx
+```
+
+建置 image：
+
+```bash
+docker build -t stock-dashboard-stage1 .
+```
+
+執行已發布日期測試：
+
+```bash
+docker run --rm \
+  -v "$PWD/templates:/data/templates:ro" \
+  -v "$PWD/outputs:/data/outputs" \
+  stock-dashboard-stage1 --date 2026-07-21
+```
+
+不指定日期時會用容器內台灣時區的今天：
+
+```bash
+docker run --rm \
+  -v "$PWD/templates:/data/templates:ro" \
+  -v "$PWD/outputs:/data/outputs" \
+  stock-dashboard-stage1
+```
+
+使用 Docker Compose：
+
+```bash
+docker compose run --rm stage1-close-report --date 2026-07-21
+```
+
+輸出會出現在本機 `outputs/YYYYMMDD/`。`templates/*.xlsx` 和 `outputs/` 都不會被提交到 GitHub。
 
 ## GitHub Actions 每日執行
 

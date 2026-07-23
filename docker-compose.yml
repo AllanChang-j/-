@@ -1,0 +1,10 @@
+services:
+  stage1-close-report:
+    build: .
+    environment:
+      TZ: Asia/Taipei
+      STAGE1_TEMPLATE: /data/templates/base.xlsx
+      STAGE1_OUTPUT_DIR: /data/outputs
+    volumes:
+      - ./templates:/data/templates:ro
+      - ./outputs:/data/outputs
