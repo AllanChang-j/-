@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import re
 import shutil
+import ssl
 import urllib.error
 from dataclasses import dataclass
 from io import StringIO
@@ -15,6 +16,11 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 import openpyxl
+
+try:
+    import certifi
+except ImportError:  # pragma: no cover - fallback for environments without certifi
+    certifi = None
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -168,7 +174,8 @@ def fetch_text_with_method(url: str, method: str, body: dict[str, str] | None) -
         data = urlencode(body or {}).encode("utf-8")
         headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
     request = Request(url, data=data, headers=headers, method=method)
-    with urlopen(request, timeout=40) as response:
+    context = ssl.create_default_context(cafile=certifi.where()) if certifi else None
+    with urlopen(request, timeout=40, context=context) as response:
         raw = response.read()
         charset = response.headers.get_content_charset() or "utf-8"
     try:
@@ -315,7 +322,14 @@ def source_rows(source: SourceConfig) -> list[dict[str, Any]]:
         ) from exc
     if source.fmt.lower() == "csv":
         return parse_csv_rows(text)
-    return parse_json_rows(source, text)
+    try:
+        return parse_json_rows(source, text)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"{source.label} 資料格式無法辨識或資料尚未發布：{source.url}\n"
+            f"若查詢今天，可能是交易所尚未提供當日收盤表；可稍晚再試或指定已發布日期。\n"
+            f"原始錯誤：{exc}"
+        ) from exc
 
 
 def is_today(day: dt.date) -> bool:
