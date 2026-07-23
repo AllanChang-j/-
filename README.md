@@ -50,6 +50,8 @@ python src/stage1_close_report.py \
 
 目前程式已先支援 JSON 與 CSV 兩種回應格式，且會依欄名對應到範本 `1收盤` 工作表的欄位。
 
+TPEx 在部分 macOS / Python 3.13 環境可能出現憑證鏈 `Missing Subject Key Identifier` 錯誤；設定檔已針對 TPEx 來源啟用受控 SSL fallback。TWSE 仍使用正常憑證驗證。
+
 目前 TPEx 免費 OpenAPI 的上櫃與興櫃行情是「最新日」資料；若要回補歷史日期，需改成來源網站實際的歷史 CSV/API。
 
 預設只保留四碼股票代號，避免 ETF、債券、權證等商品讓資料筆數超過原範本公式列。

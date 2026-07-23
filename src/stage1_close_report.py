@@ -109,6 +109,7 @@ class SourceConfig:
     method: str = "GET"
     body: dict[str, str] | None = None
     historical: bool = True
+    allow_insecure_ssl_fallback: bool = False
 
 
 def parse_args() -> argparse.Namespace:
@@ -155,16 +156,17 @@ def load_sources(config_path: Path, day: dt.date) -> list[SourceConfig]:
                 method=raw.get("method", "GET").upper(),
                 body=body,
                 historical=raw.get("historical", True),
+                allow_insecure_ssl_fallback=raw.get("allow_insecure_ssl_fallback", False),
             )
         )
     return sources
 
 
 def fetch_text(url: str) -> str:
-    return fetch_text_with_method(url, "GET", None)
+    return fetch_text_with_method(url, "GET", None, False)
 
 
-def fetch_text_with_method(url: str, method: str, body: dict[str, str] | None) -> str:
+def fetch_text_with_method(url: str, method: str, body: dict[str, str] | None, allow_insecure_ssl_fallback: bool) -> str:
     headers = {
         "User-Agent": "Mozilla/5.0 stock-dashboard-stage1/0.1",
         "Accept": "application/json,text/csv,text/plain,*/*",
@@ -175,9 +177,19 @@ def fetch_text_with_method(url: str, method: str, body: dict[str, str] | None) -
         headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
     request = Request(url, data=data, headers=headers, method=method)
     context = ssl.create_default_context(cafile=certifi.where()) if certifi else None
-    with urlopen(request, timeout=40, context=context) as response:
-        raw = response.read()
-        charset = response.headers.get_content_charset() or "utf-8"
+    try:
+        with urlopen(request, timeout=40, context=context) as response:
+            raw = response.read()
+            charset = response.headers.get_content_charset() or "utf-8"
+    except urllib.error.URLError as exc:
+        reason = exc.reason if hasattr(exc, "reason") else exc
+        is_cert_error = isinstance(reason, ssl.SSLCertVerificationError)
+        if not (allow_insecure_ssl_fallback and is_cert_error):
+            raise
+        insecure_context = ssl._create_unverified_context()
+        with urlopen(request, timeout=40, context=insecure_context) as response:
+            raw = response.read()
+            charset = response.headers.get_content_charset() or "utf-8"
     try:
         return raw.decode(charset)
     except UnicodeDecodeError:
@@ -312,7 +324,7 @@ def parse_csv_rows(text: str) -> list[dict[str, Any]]:
 
 def source_rows(source: SourceConfig) -> list[dict[str, Any]]:
     try:
-        text = fetch_text_with_method(source.url, source.method, source.body)
+        text = fetch_text_with_method(source.url, source.method, source.body, source.allow_insecure_ssl_fallback)
     except urllib.error.URLError as exc:
         detail = exc.reason if hasattr(exc, "reason") else exc
         raise RuntimeError(

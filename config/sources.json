@@ -19,6 +19,7 @@
         "type": "EW",
         "response": "json"
       },
+      "allow_insecure_ssl_fallback": true,
       "source_page": "https://www.tpex.org.tw/zh-tw/mainboard/trading/info/mi-pricing.html?type=",
       "header_markers": ["代號", "名稱"]
     },
@@ -32,6 +33,7 @@
         "response": "json"
       },
       "historical": false,
+      "allow_insecure_ssl_fallback": true,
       "source_page": "https://www.tpex.org.tw/zh-tw/esb/trading/info/pricing.html",
       "header_markers": ["代號", "名稱"]
     }
