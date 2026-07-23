@@ -96,24 +96,59 @@ bash scripts/install_launchd.sh
 
 預設排程為週一至週五 17:30 執行。台股收盤資料通常要等交易所盤後資料發布後才會完整，如果來源延遲，可以把時間改晚。
 
-## Docker 使用
+## Docker 部署
 
 Docker 適合在其他電腦、NAS、伺服器或排程環境穩定執行，避免 macOS Python / SSL / 套件版本差異。
 
-先把範本放到本機 `templates/base.xlsx`：
+### 1. 安裝前提
+
+目標電腦需要先安裝：
+
+- Git
+- Docker Desktop，或 Linux 上的 Docker Engine
+- Docker Compose plugin，也就是可執行 `docker compose`
+
+確認安裝：
+
+```bash
+git --version
+docker --version
+docker compose version
+```
+
+### 2. 下載專案
+
+```bash
+git clone https://github.com/AllanChang-j/-.git stock-dashboard
+cd stock-dashboard
+```
+
+### 3. 放入 Excel 範本
+
+GitHub 不會保存範本 xlsx；另一台電腦要自己放範本。預設 Docker 設定會讀：
+
+```text
+templates/base.xlsx
+```
+
+把範本放進去：
 
 ```bash
 mkdir -p templates outputs
-cp "/Users/allanchang/Downloads/010.2026收盤日報資料整理0713.xlsx" templates/base.xlsx
+cp "/你的範本路徑/010.2026收盤日報資料整理0713.xlsx" templates/base.xlsx
 ```
 
-建置 image：
+注意：`templates/*.xlsx` 已被 `.gitignore` 排除，不會被提交到 GitHub。
+
+### 4. 建置 Docker image
 
 ```bash
 docker build -t stock-dashboard-stage1 .
 ```
 
-執行已發布日期測試：
+### 5. 手動執行
+
+指定已發布日期測試：
 
 ```bash
 docker run --rm \
@@ -122,7 +157,7 @@ docker run --rm \
   stock-dashboard-stage1 --date 2026-07-21
 ```
 
-不指定日期時會用容器內台灣時區的今天：
+正式跑當天資料：
 
 ```bash
 docker run --rm \
@@ -131,13 +166,73 @@ docker run --rm \
   stock-dashboard-stage1
 ```
 
-使用 Docker Compose：
+輸出會出現在：
+
+```text
+outputs/YYYYMMDD/收盤日報_YYYYMMDD.xlsx
+```
+
+### 6. 使用 Docker Compose
+
+Compose 已經在 `docker-compose.yml` 設好 volume 和環境變數。
+
+指定日期測試：
 
 ```bash
 docker compose run --rm stage1-close-report --date 2026-07-21
 ```
 
-輸出會出現在本機 `outputs/YYYYMMDD/`。`templates/*.xlsx` 和 `outputs/` 都不會被提交到 GitHub。
+正式跑當天資料：
+
+```bash
+docker compose run --rm stage1-close-report
+```
+
+### 7. 在伺服器上排程
+
+Linux / NAS 可用 crontab 排程。以下範例是週一至週五台灣時間 16:00 執行。
+
+先開 crontab：
+
+```bash
+crontab -e
+```
+
+加入這行，請把 `/path/to/stock-dashboard` 換成實際專案路徑：
+
+```cron
+0 16 * * 1-5 cd /path/to/stock-dashboard && mkdir -p logs && /usr/bin/docker compose run --rm stage1-close-report >> logs/stage1.log 2>&1
+```
+
+如果主機不是台灣時區，建議改成 UTC 對應時間，或先調整主機時區。GitHub Actions 用 UTC `08:00` 對應台灣 `16:00`。
+
+### 8. 更新 Docker 部署
+
+之後專案有更新時：
+
+```bash
+git pull
+docker compose build --no-cache
+docker compose run --rm stage1-close-report --date 2026-07-21
+```
+
+確認測試正常後，再讓排程繼續跑。
+
+### 9. 常見問題
+
+如果出現 `templates/base.xlsx` 找不到：
+
+```bash
+ls -lh templates/base.xlsx
+```
+
+如果 Docker 產出的檔案權限怪怪的，可以先確認 `outputs` 目錄存在：
+
+```bash
+mkdir -p outputs
+```
+
+如果不指定日期時顯示 TWSE 當日收盤表尚未發布，表示交易所資料還沒出來，稍晚再跑即可。
 
 ## GitHub Actions 每日執行
 
