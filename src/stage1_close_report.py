@@ -99,6 +99,30 @@ TEXT_COLUMNS_BY_MARKET = {
     "esb": {1, 2, 12, 13, 15, 16},
 }
 
+MARKET_LABELS = {
+    "listed": "上市",
+    "mainboard": "上櫃",
+    "esb": "興櫃",
+}
+
+MARKET_ORDER = {
+    "listed": 0,
+    "mainboard": 1,
+    "esb": 2,
+}
+
+VOLUME_COLUMN_BY_MARKET = {
+    "listed": 3,
+    "mainboard": 8,
+    "esb": 14,
+}
+
+AMOUNT_COLUMN_BY_MARKET = {
+    "listed": 5,
+    "mainboard": 9,
+    "esb": None,
+}
+
 
 @dataclass(frozen=True)
 class SourceConfig:
@@ -111,6 +135,25 @@ class SourceConfig:
     body: dict[str, str] | None = None
     historical: bool = True
     allow_insecure_ssl_fallback: bool = False
+
+
+@dataclass(frozen=True)
+class PreparedRow:
+    market: str
+    label: str
+    symbol: str
+    name: str
+    values: list[Any]
+    from_source: bool = True
+
+
+@dataclass(frozen=True)
+class TemplateRawRow:
+    row_index: int
+    market: str
+    symbol: str
+    name: str
+    values: list[Any]
 
 
 def parse_args() -> argparse.Namespace:
@@ -561,23 +604,130 @@ def validate_formulas_unchanged(before: dict[tuple[str, str], str], wb: openpyxl
     print(f"公式完整性: OK ({len(before)} formulas preserved)")
 
 
-def template_symbols(ws: openpyxl.worksheet.worksheet.Worksheet) -> list[tuple[int, str]]:
-    symbols: list[tuple[int, str]] = []
+def raw_row_values(ws: openpyxl.worksheet.worksheet.Worksheet, row_index: int) -> list[Any]:
+    return [ws.cell(row_index, col_index).value for col_index in range(RAW_START_COL, RAW_END_COL + 1)]
+
+
+def normalize_symbol(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def template_raw_rows(ws: openpyxl.worksheet.worksheet.Worksheet) -> list[TemplateRawRow]:
+    rows: list[TemplateRawRow] = []
+    current_market = "listed"
     for row_index in range(RAW_START_ROW, RAW_END_ROW + 1):
-        value = ws.cell(row_index, RAW_START_COL).value or ws.cell(row_index, FORMULA_START_COL).value
-        symbol = "" if value is None else str(value).strip()
-        if re.fullmatch(r"\d{4,6}", symbol):
-            symbols.append((row_index, symbol))
-    return symbols
+        values = raw_row_values(ws, row_index)
+        symbol = normalize_symbol(values[0])
+        name = "" if values[1] is None else str(values[1]).strip()
+        if name.startswith("上市資料"):
+            current_market = "mainboard"
+            continue
+        if name.startswith("上櫃資料"):
+            current_market = "esb"
+            continue
+        if re.fullmatch(r"\d{4}", symbol):
+            rows.append(TemplateRawRow(row_index, current_market, symbol, name, values))
+    return rows
+
+
+def prepare_source_rows(rows_by_source: list[tuple[SourceConfig, list[dict[str, Any]]]]) -> list[PreparedRow]:
+    prepared: list[PreparedRow] = []
+    for source, rows in rows_by_source:
+        for row in rows:
+            values = to_template_row(source.market, row)
+            symbol = normalize_symbol(values[0])
+            if not symbol:
+                continue
+            name = "" if values[1] is None else str(values[1]).strip()
+            prepared.append(PreparedRow(source.market, source.label, symbol, name, values))
+    return prepared
+
+
+def preserved_template_rows(template_rows: list[TemplateRawRow], fetched_markets: set[str]) -> list[PreparedRow]:
+    preserved: list[PreparedRow] = []
+    for row in template_rows:
+        if row.market in fetched_markets:
+            continue
+        preserved.append(PreparedRow(row.market, MARKET_LABELS.get(row.market, row.market), row.symbol, row.name, row.values, False))
+    return preserved
+
+
+def market_sort_key(row: PreparedRow) -> tuple[int, str]:
+    return (MARKET_ORDER.get(row.market, 99), row.symbol)
+
+
+def compare_cell_value(expected: Any, actual: Any) -> bool:
+    if expected is None and actual in (None, ""):
+        return True
+    if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
+        return abs(float(expected) - float(actual)) < 0.0000001
+    return expected == actual
+
+
+def validate_written_source_values(ws: openpyxl.worksheet.worksheet.Worksheet, prepared_rows: list[PreparedRow]) -> dict[str, dict[str, Any]]:
+    errors: list[str] = []
+    summary: dict[str, dict[str, Any]] = {}
+    numeric_cells = 0
+    source_rows = 0
+    preserved_rows = 0
+    for offset, prepared in enumerate(prepared_rows):
+        row_index = RAW_START_ROW + offset
+        market_summary = summary.setdefault(prepared.market, {"label": prepared.label, "rows": 0, "volume": 0, "amount": 0})
+        market_summary["rows"] += 1
+        if prepared.from_source:
+            source_rows += 1
+        else:
+            preserved_rows += 1
+        for col_offset, expected in enumerate(prepared.values, start=RAW_START_COL):
+            actual = ws.cell(row_index, col_offset).value
+            if isinstance(expected, (int, float)):
+                numeric_cells += 1
+            if prepared.from_source and not compare_cell_value(expected, actual):
+                errors.append(f"{ws.title}!{ws.cell(row_index, col_offset).coordinate}: source={expected!r}, workbook={actual!r}")
+        volume_col = VOLUME_COLUMN_BY_MARKET.get(prepared.market)
+        if volume_col and isinstance(prepared.values[volume_col - 1], (int, float)):
+            market_summary["volume"] += prepared.values[volume_col - 1]
+        amount_col = AMOUNT_COLUMN_BY_MARKET.get(prepared.market)
+        if amount_col and isinstance(prepared.values[amount_col - 1], (int, float)):
+            market_summary["amount"] += prepared.values[amount_col - 1]
+    if errors:
+        raise ValueError("數值交叉檢查失敗；來源資料與寫入 Excel 的 raw cell 不一致。\n" + "\n".join(errors[:20]))
+    preserved_text = f", preserved template rows={preserved_rows}" if preserved_rows else ""
+    print(f"數值交叉檢查: OK (source rows={source_rows}{preserved_text}, numeric cells={numeric_cells})")
+    for market in sorted(summary, key=lambda key: MARKET_ORDER.get(key, 99)):
+        item = summary[market]
+        amount_text = f", amount={int(item['amount'])}" if item["amount"] else ""
+        print(f"  {item['label']}: rows={item['rows']}, volume={int(item['volume'])}{amount_text}")
+    return summary
+
+
+def print_symbol_change_report(template_rows: list[TemplateRawRow], prepared_rows: list[PreparedRow], fetched_markets: set[str]) -> None:
+    template_by_market: dict[str, dict[str, TemplateRawRow]] = {}
+    source_by_market: dict[str, dict[str, PreparedRow]] = {}
+    for row in template_rows:
+        template_by_market.setdefault(row.market, {})[row.symbol] = row
+    for row in prepared_rows:
+        if row.from_source:
+            source_by_market.setdefault(row.market, {})[row.symbol] = row
+    for market in sorted(fetched_markets, key=lambda key: MARKET_ORDER.get(key, 99)):
+        template_symbols = set(template_by_market.get(market, {}))
+        source_symbols = set(source_by_market.get(market, {}))
+        added = sorted(source_symbols - template_symbols)
+        removed = sorted(template_symbols - source_symbols)
+        label = MARKET_LABELS.get(market, market)
+        if not added and not removed:
+            print(f"{label}公司清單變化: 無")
+            continue
+        print(f"{label}公司清單變化: added={len(added)}, removed={len(removed)}")
+        if added:
+            examples = ", ".join(f"{symbol} {source_by_market[market][symbol].name}".strip() for symbol in added[:10])
+            print(f"  新增: {examples}")
+        if removed:
+            examples = ", ".join(f"{symbol} {template_by_market[market][symbol].name}".strip() for symbol in removed[:10])
+            print(f"  刪除: {examples}")
 
 
 def update_workbook(template: Path, output_path: Path, day: dt.date, rows_by_source: list[tuple[SourceConfig, list[dict[str, Any]]]]) -> None:
-    rows_by_symbol: dict[str, list[Any]] = {}
-    for source, rows in rows_by_source:
-        for row in rows:
-            symbol = row_symbol(row)
-            rows_by_symbol[symbol] = to_template_row(source.market, row)
-
     shutil.copy2(template, output_path)
     wb = openpyxl.load_workbook(output_path)
     ws = wb[RAW_SHEET]
@@ -585,34 +735,34 @@ def update_workbook(template: Path, output_path: Path, day: dt.date, rows_by_sou
     formulas_before = formula_snapshot(wb)
     styles_before = style_snapshot(wb)
     sheet_formats_before = sheet_format_snapshot(wb)
-    template_codes = template_symbols(ws)
+    template_rows = template_raw_rows(ws)
+    fetched_markets = {source.market for source, _ in rows_by_source}
+    prepared_rows = prepare_source_rows(rows_by_source)
+    preserved_rows = preserved_template_rows(template_rows, fetched_markets)
+    combined_rows = sorted(prepared_rows, key=market_sort_key) + sorted(preserved_rows, key=market_sort_key)
+    capacity = RAW_END_ROW - RAW_START_ROW + 1
+    if len(combined_rows) > capacity:
+        raise ValueError(f"來源資料筆數 {len(combined_rows)} 超過範本 raw 區容量 {capacity}，需要擴充範本公式列。")
     ws["A5"] = f"{day.year - 1911}/{day.month}/{day.day}"
 
-    matched = 0
-    for row_index, symbol in template_codes:
-        values = rows_by_symbol.get(symbol)
-        if values is None:
-            continue
-        existing_name = ws.cell(row_index, 2).value
-        incoming_name = values[1] if len(values) > 1 else None
-        if existing_name and incoming_name and str(existing_name).strip() != str(incoming_name).strip():
-            continue
+    for row_index in range(RAW_START_ROW, RAW_END_ROW + 1):
         clear_raw_row(ws, row_index)
-        matched += 1
-        for col_offset, value in enumerate(values, start=RAW_START_COL):
+
+    for offset, prepared in enumerate(combined_rows):
+        row_index = RAW_START_ROW + offset
+        for col_offset, value in enumerate(prepared.values, start=RAW_START_COL):
             ws.cell(row_index, col_offset).value = value
 
+    validate_written_source_values(ws, combined_rows)
     validate_formulas_unchanged(formulas_before, wb)
     validate_styles_unchanged(styles_before, wb)
     validate_sheet_formats_unchanged(sheet_formats_before, wb)
     wb.save(output_path)
-    missing_in_template = sorted(set(rows_by_symbol) - {symbol for _, symbol in template_codes})
-    missing_from_sources = sorted({symbol for _, symbol in template_codes} - set(rows_by_symbol))
-    print(f"範本列對應成功: {matched} rows")
-    if missing_in_template:
-        print(f"來源有但範本沒有: {len(missing_in_template)} symbols")
-    if missing_from_sources:
-        print(f"範本有但來源沒有: {len(missing_from_sources)} symbols")
+    print_symbol_change_report(template_rows, prepared_rows, fetched_markets)
+    print(f"每日來源資料寫入: {len(prepared_rows)} rows")
+    if preserved_rows:
+        preserved_labels = sorted({row.label for row in preserved_rows})
+        print(f"保留未抓取市場範本資料: {len(preserved_rows)} rows ({', '.join(preserved_labels)})")
 
 
 def main() -> None:
