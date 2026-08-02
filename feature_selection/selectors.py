@@ -8,7 +8,7 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
 from sklearn.inspection import permutation_importance
-from sklearn.linear_model import ElasticNetCV, LassoCV, LogisticRegression
+from sklearn.linear_model import ElasticNetCV, LassoCV, RidgeCV, LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -76,10 +76,13 @@ def select_features(
     if is_regression:
         lasso = make_pipeline(StandardScaler(), LassoCV(cv=3, random_state=random_state, max_iter=5000))
         elastic = make_pipeline(StandardScaler(), ElasticNetCV(cv=3, random_state=random_state, max_iter=5000))
+        ridge = make_pipeline(StandardScaler(), RidgeCV(alphas=np.logspace(-4, 4, 25), cv=3))
         lasso.fit(X, y)
         elastic.fit(X, y)
+        ridge.fit(X, y)
         rank_frames.append(_rank_from_scores(kept, np.abs(lasso[-1].coef_), "lasso"))
         rank_frames.append(_rank_from_scores(kept, np.abs(elastic[-1].coef_), "elastic_net"))
+        rank_frames.append(_rank_from_scores(kept, np.abs(ridge[-1].coef_), "ridge"))
         mi = mutual_info_regression(X, y, random_state=random_state)
         aux_model: Any = RandomForestRegressor(n_estimators=120, min_samples_leaf=5, random_state=random_state, n_jobs=1)
         scoring = "neg_mean_absolute_error"
@@ -105,12 +108,25 @@ def select_features(
                 max_iter=3000,
             ),
         )
+        ridge_lr = make_pipeline(
+            StandardScaler(),
+            LogisticRegression(
+                penalty="l2",
+                solver="lbfgs",
+                C=0.2,
+                random_state=random_state,
+                max_iter=2000,
+            ),
+        )
         l1.fit(X, y.astype(int))
         elastic_lr.fit(X, y.astype(int))
+        ridge_lr.fit(X, y.astype(int))
         l1_coef = np.abs(l1[-1].coef_).mean(axis=0)
         elastic_coef = np.abs(elastic_lr[-1].coef_).mean(axis=0)
+        ridge_coef = np.abs(ridge_lr[-1].coef_).mean(axis=0)
         rank_frames.append(_rank_from_scores(kept, l1_coef, "lasso"))
         rank_frames.append(_rank_from_scores(kept, elastic_coef, "elastic_net"))
+        rank_frames.append(_rank_from_scores(kept, ridge_coef, "ridge"))
         mi = mutual_info_classif(X, y.astype(int), random_state=random_state)
         aux_model = RandomForestClassifier(
             n_estimators=160,
