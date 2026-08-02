@@ -1,0 +1,47 @@
+from __future__ import annotations
+
+from typing import Literal
+
+import numpy as np
+import pandas as pd
+
+
+TaskType = Literal["binary", "three_class", "regression"]
+
+
+def add_prediction_labels(
+    df: pd.DataFrame,
+    horizon: int,
+    task: TaskType = "binary",
+    price_column: str = "adjusted_close",
+    neutral_threshold: float = 0.01,
+) -> pd.DataFrame:
+    labeled = df.sort_values(["symbol", "date"]).copy()
+    future_price = labeled.groupby("symbol")[price_column].shift(-horizon)
+    labeled["future_return"] = future_price / labeled[price_column] - 1
+
+    if task == "binary":
+        labeled["target"] = (labeled["future_return"] > 0).astype(float)
+    elif task == "three_class":
+        labeled["target"] = np.select(
+            [labeled["future_return"] < -neutral_threshold, labeled["future_return"] > neutral_threshold],
+            [0, 2],
+            default=1,
+        ).astype(float)
+    elif task == "regression":
+        labeled["target"] = labeled["future_return"].astype(float)
+    else:
+        raise ValueError(f"Unsupported task: {task}")
+
+    return labeled.dropna(subset=["future_return", "target"]).reset_index(drop=True)
+
+
+def num_classes(task: TaskType) -> int:
+    if task == "binary":
+        return 2
+    if task == "three_class":
+        return 3
+    if task == "regression":
+        return 1
+    raise ValueError(f"Unsupported task: {task}")
+
