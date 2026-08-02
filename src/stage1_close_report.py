@@ -265,7 +265,7 @@ def coerce_number(value: Any) -> Any:
     if isinstance(value, (int, float)):
         return value
     text = str(value).strip().replace(",", "")
-    if text in {"", "--", "---", "-"}:
+    if text in {"", "--", "---", "-"} or re.fullmatch(r"-{2,}", text):
         return None
     if not re.fullmatch(r"[+-]?\d+(?:\.\d+)?", text):
         return value
@@ -648,7 +648,7 @@ def preserved_template_rows(template_rows: list[TemplateRawRow], fetched_markets
     for row in template_rows:
         if row.market in fetched_markets:
             continue
-        preserved.append(PreparedRow(row.market, MARKET_LABELS.get(row.market, row.market), row.symbol, row.name, row.values, False))
+        preserved.append(PreparedRow(row.market, MARKET_LABELS.get(row.market, row.market), row.symbol, row.name, coerce_template_row(row.market, row.values), False))
     return preserved
 
 
