@@ -250,9 +250,11 @@ def run_lightgbm_experiment(
         X_train = train_data.flatten()
         y_source = train_data.y
     y_train = y_source if task == "regression" else y_source.astype(int)
+    X_valid = validation_data.flatten()
+    y_valid = validation_data.y if task == "regression" else validation_data.y.astype(int)
 
     start = time.perf_counter()
-    wrapper.fit(X_train, y_train)
+    wrapper.fit(X_train, y_train, X_valid=X_valid, y_valid=y_valid)
     training_time = time.perf_counter() - start
     model_path = output_dir / "models" / "lightgbm.joblib"
     model_path.parent.mkdir(parents=True, exist_ok=True)
