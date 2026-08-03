@@ -8,12 +8,13 @@ import os
 import re
 import shutil
 import ssl
+import time
 import urllib.error
 from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
 
 import openpyxl
@@ -213,10 +214,19 @@ def fetch_text(url: str) -> str:
     return fetch_text_with_method(url, "GET", None, False)
 
 
-def fetch_text_with_method(url: str, method: str, body: dict[str, str] | None, allow_insecure_ssl_fallback: bool) -> str:
+def fetch_text_with_method(
+    url: str,
+    method: str,
+    body: dict[str, str] | None,
+    allow_insecure_ssl_fallback: bool,
+    redirect_count: int = 0,
+    retry_count: int = 0,
+) -> str:
     headers = {
-        "User-Agent": "Mozilla/5.0 stock-dashboard-stage1/0.1",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) stock-dashboard-stage1/0.1",
         "Accept": "application/json,text/csv,text/plain,*/*",
+        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+        "Referer": "https://www.twse.com.tw/zh/trading/historical/mi-index.html",
     }
     data = None
     if method == "POST":
@@ -228,8 +238,43 @@ def fetch_text_with_method(url: str, method: str, body: dict[str, str] | None, a
         with urlopen(request, timeout=40, context=context) as response:
             raw = response.read()
             charset = response.headers.get_content_charset() or "utf-8"
+    except urllib.error.HTTPError as exc:
+        if exc.code in {301, 302, 303, 307, 308} and redirect_count < 5:
+            location = exc.headers.get("Location")
+            if location:
+                redirect_url = urljoin(url, location)
+                redirect_method = "GET" if exc.code == 303 else method
+                return fetch_text_with_method(
+                    redirect_url,
+                    redirect_method,
+                    body if redirect_method == method else None,
+                    allow_insecure_ssl_fallback,
+                    redirect_count + 1,
+                    retry_count,
+                )
+        if exc.code in {301, 302, 303, 307, 308} and retry_count < 4:
+            time.sleep(1.5 * (retry_count + 1))
+            return fetch_text_with_method(
+                url,
+                method,
+                body,
+                allow_insecure_ssl_fallback,
+                redirect_count,
+                retry_count + 1,
+            )
+        raise
     except urllib.error.URLError as exc:
         reason = exc.reason if hasattr(exc, "reason") else exc
+        if "Temporary Redirect" in str(reason) and retry_count < 4:
+            time.sleep(1.5 * (retry_count + 1))
+            return fetch_text_with_method(
+                url,
+                method,
+                body,
+                allow_insecure_ssl_fallback,
+                redirect_count,
+                retry_count + 1,
+            )
         is_cert_error = isinstance(reason, ssl.SSLCertVerificationError)
         if not (allow_insecure_ssl_fallback and is_cert_error):
             raise

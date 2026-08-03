@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", default="data/raw/taiwan_daily_ohlcv.csv", help="Output CSV path")
     parser.add_argument("--include-esb-latest", action="store_true", help="Include ESB only when the requested date is today")
     parser.add_argument("--include-non-stock", action="store_true", help="Keep non four-digit products")
+    parser.add_argument("--request-delay", type=float, default=0.25, help="Seconds to wait between source requests")
+    parser.add_argument("--strict-network", action="store_true", help="Abort instead of writing partial data when a source has a network error")
     return parser.parse_args()
 
 
@@ -76,7 +79,15 @@ def normalized_records(day: dt.date, market: str, label: str, rows: list[dict[st
     return records
 
 
-def collect_history(start: dt.date, end: dt.date, config_path: Path, include_esb_latest: bool, include_non_stock: bool) -> pd.DataFrame:
+def collect_history(
+    start: dt.date,
+    end: dt.date,
+    config_path: Path,
+    include_esb_latest: bool,
+    include_non_stock: bool,
+    request_delay: float = 0.25,
+    strict_network: bool = False,
+) -> pd.DataFrame:
     all_records: list[dict[str, Any]] = []
     today = dt.date.today()
     for day in date_range(start, end):
@@ -89,6 +100,8 @@ def collect_history(start: dt.date, end: dt.date, config_path: Path, include_esb
             try:
                 rows = source_rows(source)
             except Exception as exc:
+                if strict_network and "資料來源連線失敗" in str(exc):
+                    raise
                 print(f"  {source.label}: skipped ({exc})")
                 continue
             if not include_non_stock:
@@ -96,6 +109,8 @@ def collect_history(start: dt.date, end: dt.date, config_path: Path, include_esb
             records = normalized_records(day, source.market, source.label, rows)
             all_records.extend(records)
             print(f"  {source.label}: {len(records)} rows")
+            if request_delay > 0:
+                time.sleep(request_delay)
     if not all_records:
         raise RuntimeError("No records collected. Check date range, network, and source availability.")
     frame = pd.DataFrame(all_records)
@@ -111,7 +126,15 @@ def main() -> None:
     end = dt.date.fromisoformat(args.end)
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    frame = collect_history(start, end, Path(args.config), args.include_esb_latest, args.include_non_stock)
+    frame = collect_history(
+        start,
+        end,
+        Path(args.config),
+        args.include_esb_latest,
+        args.include_non_stock,
+        args.request_delay,
+        args.strict_network,
+    )
     frame.to_csv(output_path, index=False)
     print(f"Wrote {len(frame)} rows to {output_path}")
 

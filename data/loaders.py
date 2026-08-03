@@ -39,7 +39,7 @@ def load_daily_csv(path: str | Path) -> pd.DataFrame:
     input_path = Path(path)
     if not input_path.exists():
         raise FileNotFoundError(f"Daily data file not found: {input_path}")
-    df = pd.read_csv(input_path)
+    df = pd.read_csv(input_path, dtype={"symbol": "string"})
     return normalize_daily_schema(df)
 
 
@@ -80,4 +80,3 @@ def validate_no_duplicate_timestamps(df: pd.DataFrame) -> None:
     duplicated = df.duplicated(["symbol", "date"]).sum()
     if duplicated:
         raise ValueError(f"Found {duplicated} duplicate symbol/date rows")
-
