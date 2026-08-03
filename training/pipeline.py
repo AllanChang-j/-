@@ -96,6 +96,7 @@ def _classification_errors(result: PredictionResult, task: str) -> np.ndarray:
 def prepare_research_frame(df: pd.DataFrame, config: dict[str, Any]) -> tuple[pd.DataFrame, list[str]]:
     set_global_seed(int(config.get("experiment", {}).get("seed", 42)))
     features, candidate_columns = build_feature_frame(df, config)
+    print(f"Built feature frame: rows={len(features)}, candidate_features={len(candidate_columns)}", flush=True)
     labels = config.get("labels", {})
     labeled = add_prediction_labels(
         features,
@@ -104,6 +105,7 @@ def prepare_research_frame(df: pd.DataFrame, config: dict[str, Any]) -> tuple[pd
         price_column=str(config.get("data", {}).get("price_column", "adjusted_close")),
         neutral_threshold=float(labels.get("neutral_threshold", 0.01)),
     )
+    print(f"Added labels: rows={len(labeled)}", flush=True)
     return labeled, candidate_columns
 
 
@@ -125,21 +127,51 @@ def prepare_window_data(
         correlation_threshold=float(feature_cfg.get("correlation_threshold", 0.96)),
         random_state=int(config.get("experiment", {}).get("seed", 42)),
     )
+    print(f"Selected features: count={len(selection.selected_features)}", flush=True)
+
+    def compact_frame(frame: pd.DataFrame) -> pd.DataFrame:
+        meta_columns = [
+            "date",
+            "symbol",
+            "name",
+            "market",
+            "close",
+            price_column,
+            "target",
+            "future_return",
+            "execution_return",
+            "signal_date",
+            "entry_date",
+            "exit_date",
+            "entry_price",
+            "exit_price",
+        ]
+        keep_columns = [column for column in dict.fromkeys([*meta_columns, *selection.selected_features]) if column in frame.columns]
+        return frame.loc[:, keep_columns].copy()
+
     preprocessor = TabularPreprocessor(scale=bool(config.get("dataset", {}).get("scale_features", True)))
-    preprocessor.fit(train_df, selection.selected_features)
-    train_processed = preprocessor.transform(train_df)
-    full_processed = preprocessor.transform(full_df if full_df is not None else pd.concat([train_df, validation_df, test_df], axis=0))
     sequence_length = int(config.get("dataset", {}).get("sequence_length", 30))
     price_column = str(config.get("data", {}).get("price_column", "adjusted_close"))
+    compact_train = compact_frame(train_df)
+    compact_full = compact_frame(full_df if full_df is not None else pd.concat([train_df, validation_df, test_df], axis=0, copy=False))
+    preprocessor.fit(compact_train, selection.selected_features)
+    print("Fitted fold-safe preprocessor on training split", flush=True)
+    train_processed = preprocessor.transform(compact_train)
+    full_processed = preprocessor.transform(compact_full)
+    print(f"Transformed compact frames: train_rows={len(train_processed)}, full_rows={len(full_processed)}", flush=True)
     train_dates = set(pd.to_datetime(train_df["date"]).unique())
     validation_dates = set(pd.to_datetime(validation_df["date"]).unique())
     test_dates = set(pd.to_datetime(test_df["date"]).unique())
-    return (
-        make_sliding_windows(train_processed, selection.selected_features, sequence_length, price_column=price_column, target_dates=train_dates),
-        make_sliding_windows(full_processed, selection.selected_features, sequence_length, price_column=price_column, target_dates=validation_dates),
-        make_sliding_windows(full_processed, selection.selected_features, sequence_length, price_column=price_column, target_dates=test_dates),
-        selection,
-    )
+    print("Building train windows", flush=True)
+    train_windows = make_sliding_windows(train_processed, selection.selected_features, sequence_length, price_column=price_column, target_dates=train_dates)
+    print(f"Built train windows: samples={len(train_windows.y)}", flush=True)
+    print("Building validation windows with historical context", flush=True)
+    validation_windows = make_sliding_windows(full_processed, selection.selected_features, sequence_length, price_column=price_column, target_dates=validation_dates)
+    print(f"Built validation windows: samples={len(validation_windows.y)}", flush=True)
+    print("Building test windows with historical context", flush=True)
+    test_windows = make_sliding_windows(full_processed, selection.selected_features, sequence_length, price_column=price_column, target_dates=test_dates)
+    print(f"Built test windows: samples={len(test_windows.y)}", flush=True)
+    return train_windows, validation_windows, test_windows, selection
 
 
 def run_torch_experiment(
@@ -206,9 +238,18 @@ def run_lightgbm_experiment(
     model_config = dict(config.get("models", {}).get("lightgbm", {}))
     model_config.setdefault("random_state", int(config.get("experiment", {}).get("seed", 42)))
     model_config.pop("enabled", None)
+    max_train_windows = model_config.pop("max_train_windows", None)
     wrapper = LightGBMWrapper(task=task, params=model_config)
-    X_train = train_data.flatten()
-    y_train = train_data.y if task == "regression" else train_data.y.astype(int)
+    if max_train_windows is not None and int(max_train_windows) < len(train_data.y):
+        rng = np.random.default_rng(int(model_config.get("random_state", 42)))
+        train_indices = np.sort(rng.choice(len(train_data.y), size=int(max_train_windows), replace=False))
+        X_train = train_data.X[train_indices].reshape(len(train_indices), train_data.X.shape[1] * train_data.X.shape[2])
+        y_source = train_data.y[train_indices]
+        print(f"Training tree baseline on sampled windows: samples={len(train_indices)}", flush=True)
+    else:
+        X_train = train_data.flatten()
+        y_source = train_data.y
+    y_train = y_source if task == "regression" else y_source.astype(int)
 
     start = time.perf_counter()
     wrapper.fit(X_train, y_train)
@@ -377,16 +418,23 @@ def run_full_experiment(df: pd.DataFrame, config: dict[str, Any]) -> dict[str, A
     backtest_config = _backtest_config(config)
 
     enabled_models = [name for name, values in config.get("models", {}).items() if bool(values.get("enabled", True))]
-    cv_frame = pd.concat([train_df, validation_df], axis=0).sort_values(["symbol", "date"])
-    run_cross_validation(cv_frame, candidate_columns, config, Path(output_dir), enabled_models)
+    validation_config = config.get("validation", {})
+    if bool(validation_config.get("run_cross_validation", True)):
+        cv_frame = pd.concat([train_df, validation_df], axis=0, copy=False)
+        print(f"Running independent date-based CV: rows={len(cv_frame)}, models={enabled_models}", flush=True)
+        run_cross_validation(cv_frame, candidate_columns, config, Path(output_dir), enabled_models)
+    else:
+        print("Skipping cross validation for this run; holdout validation/test will still run.", flush=True)
 
     for model_name in enabled_models:
+        print(f"Training final model: {model_name}", flush=True)
         if model_name in {"cnn", "lstm", "transformer"}:
             validation_result, test_result = run_torch_experiment(model_name, train_data, validation_data, test_data, config, Path(output_dir))
         elif model_name == "lightgbm":
             validation_result, test_result = run_lightgbm_experiment(train_data, validation_data, test_data, config, Path(output_dir))
         else:
             continue
+        print(f"Completed final model: {model_name}", flush=True)
 
         prediction_frame = _prediction_frame(test_result, task, long_threshold=backtest_config.long_threshold)
         equity, trades, backtest_metrics = backtest_predictions(prediction_frame, backtest_config)

@@ -40,7 +40,7 @@ def add_prediction_labels(
     else:
         raise ValueError(f"Unsupported task: {task}")
 
-    return labeled.dropna(subset=["future_return", "target"]).reset_index(drop=True)
+    return labeled.loc[labeled["future_return"].notna() & labeled["target"].notna()]
 
 
 def num_classes(task: TaskType) -> int:

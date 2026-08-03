@@ -115,6 +115,7 @@ def train_torch_model(
         writer = None
 
     for epoch in range(config.max_epochs):
+        epoch_start = time.perf_counter()
         model.train()
         train_losses = []
         for batch_X, batch_y in train_loader:
@@ -144,6 +145,12 @@ def train_torch_model(
         validation_loss = float(np.mean(validation_losses))
         history["train_loss"].append(train_loss)
         history["validation_loss"].append(validation_loss)
+        print(
+            f"{model_name} epoch {epoch + 1}/{config.max_epochs}: "
+            f"train_loss={train_loss:.6f}, validation_loss={validation_loss:.6f}, "
+            f"elapsed_sec={time.perf_counter() - epoch_start:.1f}",
+            flush=True,
+        )
         if writer is not None:
             writer.add_scalar("loss/train", train_loss, epoch)
             writer.add_scalar("loss/validation", validation_loss, epoch)

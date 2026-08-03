@@ -36,39 +36,50 @@ def make_sliding_windows(
 ) -> WindowDataset:
     X_parts: list[np.ndarray] = []
     y_parts: list[float] = []
-    meta_records: list[dict[str, object]] = []
+    meta_frames: list[pd.DataFrame] = []
 
     for symbol, group in df.sort_values(["symbol", "date"]).groupby("symbol"):
         group = group.reset_index(drop=True)
         feature_values = group[feature_columns].to_numpy(dtype=float)
         targets = group[target_column].to_numpy(dtype=float)
-        for end in range(sequence_length - 1, len(group)):
-            row = group.iloc[end]
-            row_date = pd.Timestamp(row["date"])
-            if target_dates is not None and row_date not in target_dates:
-                continue
-            window = feature_values[end - sequence_length + 1 : end + 1]
-            target = targets[end]
-            if np.isnan(window).any() or np.isnan(target):
-                continue
-            X_parts.append(window)
-            y_parts.append(target)
-            meta_records.append(
+        row_complete = np.isfinite(feature_values).all(axis=1)
+        window_complete = pd.Series(row_complete).rolling(sequence_length).sum().to_numpy() == sequence_length
+        target_complete = np.isfinite(targets)
+        if target_dates is None:
+            date_in_scope = np.ones(len(group), dtype=bool)
+        else:
+            date_in_scope = group["date"].map(lambda value: pd.Timestamp(value) in target_dates).to_numpy(dtype=bool)
+        valid_ends = np.flatnonzero(window_complete & target_complete & date_in_scope)
+        valid_ends = valid_ends[valid_ends >= sequence_length - 1]
+        if len(valid_ends) == 0:
+            continue
+
+        X_parts.extend(feature_values[end - sequence_length + 1 : end + 1] for end in valid_ends)
+        y_parts.extend(targets[valid_ends].tolist())
+        selected = group.iloc[valid_ends]
+        fallback_close = selected["close"] if "close" in selected else np.nan
+        meta_frames.append(
+            pd.DataFrame(
                 {
-                    "date": row["date"],
+                    "date": selected["date"].to_numpy(),
                     "symbol": symbol,
-                    "name": row.get("name", symbol),
-                    "market": row.get("market", "unknown"),
-                    "close": row.get(price_column, row.get("close")),
-                    "future_return": row.get("future_return"),
-                    "execution_return": row.get("execution_return", row.get("future_return")),
-                    "signal_date": row.get("signal_date", row["date"]),
-                    "entry_date": row.get("entry_date"),
-                    "exit_date": row.get("exit_date"),
-                    "entry_price": row.get("entry_price"),
-                    "exit_price": row.get("exit_price"),
+                    "name": selected["name"].to_numpy() if "name" in selected else symbol,
+                    "market": selected["market"].to_numpy() if "market" in selected else "unknown",
+                    "close": selected[price_column].to_numpy() if price_column in selected else fallback_close,
+                    "future_return": selected["future_return"].to_numpy() if "future_return" in selected else np.nan,
+                    "execution_return": selected["execution_return"].to_numpy()
+                    if "execution_return" in selected
+                    else selected["future_return"].to_numpy()
+                    if "future_return" in selected
+                    else np.nan,
+                    "signal_date": selected["signal_date"].to_numpy() if "signal_date" in selected else selected["date"].to_numpy(),
+                    "entry_date": selected["entry_date"].to_numpy() if "entry_date" in selected else np.nan,
+                    "exit_date": selected["exit_date"].to_numpy() if "exit_date" in selected else np.nan,
+                    "entry_price": selected["entry_price"].to_numpy() if "entry_price" in selected else np.nan,
+                    "exit_price": selected["exit_price"].to_numpy() if "exit_price" in selected else np.nan,
                 }
             )
+        )
 
     if not X_parts:
         raise ValueError("No sliding windows were created. Check sequence_length, missing values, and data length.")
@@ -76,7 +87,7 @@ def make_sliding_windows(
     return WindowDataset(
         X=np.asarray(X_parts, dtype=np.float32),
         y=np.asarray(y_parts, dtype=np.float32),
-        meta=pd.DataFrame(meta_records),
+        meta=pd.concat(meta_frames, ignore_index=True),
         feature_columns=list(feature_columns),
     )
 

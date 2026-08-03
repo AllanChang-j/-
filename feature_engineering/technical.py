@@ -29,46 +29,56 @@ def _rolling_slope(series: pd.Series, window: int) -> pd.Series:
 
 def _rolling_poly_trend(series: pd.Series, window: int, degree: int = 2) -> pd.Series:
     x = np.arange(window, dtype=float)
+    design = np.vander(x, degree + 1)
+    weights = np.linalg.pinv(design)[0]
 
     def coef(values: np.ndarray) -> float:
         if np.isnan(values).any():
             return np.nan
-        return float(np.polyfit(x, values, degree)[0])
+        return float(np.dot(weights, values))
 
     return series.rolling(window).apply(coef, raw=True)
 
 
 def _rolling_regression_r2(series: pd.Series, window: int) -> pd.Series:
     x = np.arange(window, dtype=float)
+    centered_x = x - x.mean()
+    ss_x = float(np.dot(centered_x, centered_x))
 
-    def r2(values: np.ndarray) -> float:
+    def centered_xy(values: np.ndarray) -> float:
         if np.isnan(values).any():
             return np.nan
-        coef = np.polyfit(x, values, 1)
-        predicted = coef[0] * x + coef[1]
-        ss_res = np.sum((values - predicted) ** 2)
-        ss_tot = np.sum((values - values.mean()) ** 2)
-        return float(1 - ss_res / (ss_tot + EPS))
+        return float(np.dot(centered_x, values))
 
-    return series.rolling(window).apply(r2, raw=True)
+    numerator = series.rolling(window).apply(centered_xy, raw=True)
+    rolling_sum = series.rolling(window).sum()
+    rolling_sum_sq = (series**2).rolling(window).sum()
+    ss_y = rolling_sum_sq - (rolling_sum**2 / window)
+    return (numerator**2) / (ss_x * ss_y + EPS)
 
 
 def _hurst_exponent(series: pd.Series, window: int) -> pd.Series:
-    def hurst(values: np.ndarray) -> float:
-        if np.isnan(values).any() or len(np.unique(values)) < 2:
-            return np.nan
-        lags = np.arange(2, min(20, len(values) // 2))
-        if len(lags) < 2:
-            return np.nan
-        tau = [np.sqrt(np.std(np.subtract(values[lag:], values[:-lag]))) for lag in lags]
-        tau = np.asarray(tau)
-        valid = tau > 0
-        if valid.sum() < 2:
-            return np.nan
-        slope = np.polyfit(np.log(lags[valid]), np.log(tau[valid]), 1)[0]
-        return float(2 * slope)
+    lags = np.arange(2, min(20, window // 2))
+    if len(lags) < 2:
+        return pd.Series(np.nan, index=series.index)
 
-    return series.rolling(window).apply(hurst, raw=True)
+    log_tau_parts = []
+    for lag in lags:
+        tau = np.sqrt(series.diff(lag).rolling(window - lag).std())
+        log_tau_parts.append(np.log(tau.where(tau > 0)))
+    log_tau = pd.concat(log_tau_parts, axis=1)
+    log_tau.columns = lags
+
+    x = pd.Series(np.log(lags), index=lags, dtype=float)
+    valid = log_tau.notna()
+    count = valid.sum(axis=1)
+    y_sum = log_tau.sum(axis=1, skipna=True)
+    xy_sum = log_tau.mul(x, axis=1).sum(axis=1, skipna=True)
+    x_sum = valid.mul(x, axis=1).sum(axis=1)
+    x2_sum = valid.mul(x**2, axis=1).sum(axis=1)
+    denominator = count * x2_sum - x_sum**2
+    slope = (count * xy_sum - x_sum * y_sum) / (denominator + EPS)
+    return (2 * slope).where(count >= 2)
 
 
 def _rsi(close: pd.Series, window: int) -> pd.Series:
@@ -112,9 +122,9 @@ def add_features_for_symbol(group: pd.DataFrame, windows: list[int], lag_windows
     volume = group["volume"].astype(float)
     amount = group["amount"].astype(float) if "amount" in group else raw_close * volume
 
-    group["daily_return"] = close.pct_change()
-    group["weekly_return"] = close.pct_change(5)
-    group["monthly_return"] = close.pct_change(20)
+    group["daily_return"] = close.pct_change(fill_method=None)
+    group["weekly_return"] = close.pct_change(5, fill_method=None)
+    group["monthly_return"] = close.pct_change(20, fill_method=None)
     group["log_return"] = np.log(close / close.shift(1))
     group["cumulative_return_20"] = (1 + group["daily_return"]).rolling(20).apply(np.prod, raw=True) - 1
     group["intraday_return"] = raw_close / open_price - 1
@@ -138,6 +148,7 @@ def add_features_for_symbol(group: pd.DataFrame, windows: list[int], lag_windows
     group["ppo"] = 100 * (ema_12 - ema_26) / (ema_26 + EPS)
     group["ppo_signal"] = group["ppo"].ewm(span=9, adjust=False).mean()
 
+    hurst_window = max((window for window in windows if window >= 20), default=None)
     for window in windows:
         ma = close.rolling(window).mean()
         ema = close.ewm(span=window, adjust=False).mean()
@@ -151,12 +162,12 @@ def add_features_for_symbol(group: pd.DataFrame, windows: list[int], lag_windows
         group[f"linreg_slope_{window}"] = _rolling_slope(close, window)
         group[f"poly_trend_{window}"] = _rolling_poly_trend(close, window)
         group[f"rolling_regression_r2_{window}"] = _rolling_regression_r2(close, window)
-        if window >= 20:
+        if window == hurst_window:
             group[f"hurst_{window}"] = _hurst_exponent(close, window)
 
         group[f"rsi_{window}"] = _rsi(close, window)
         group[f"stochastic_{window}"] = _stochastic(close, high, low, window)
-        group[f"roc_{window}"] = close.pct_change(window)
+        group[f"roc_{window}"] = close.pct_change(window, fill_method=None)
         group[f"momentum_{window}"] = close - close.shift(window)
 
         group[f"atr_{window}"] = true_range.rolling(window).mean()

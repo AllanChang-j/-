@@ -34,10 +34,14 @@ def _drop_low_quality(df: pd.DataFrame, feature_columns: list[str], min_non_null
     return kept, removed
 
 
-def _drop_correlated(df: pd.DataFrame, feature_columns: list[str], threshold: float) -> tuple[list[str], list[str]]:
+def _drop_correlated(df: pd.DataFrame, feature_columns: list[str], threshold: float, max_rows: int = 50_000) -> tuple[list[str], list[str]]:
     if len(feature_columns) <= 1:
         return feature_columns, []
-    corr = df[feature_columns].corr(method="spearman").abs()
+    feature_frame = df[feature_columns]
+    if len(feature_frame) > max_rows:
+        positions = np.linspace(0, len(feature_frame) - 1, max_rows, dtype=int)
+        feature_frame = feature_frame.iloc[positions]
+    corr = feature_frame.corr(method="pearson").abs()
     upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
     removed = [column for column in upper.columns if any(upper[column] > threshold)]
     kept = [column for column in feature_columns if column not in removed]
@@ -67,6 +71,8 @@ def select_features(
         selected = kept[:max_features]
         ranking = pd.DataFrame({"feature": selected, "aggregate_rank": np.arange(1, len(selected) + 1)})
         return FeatureSelectionResult(selected, ranking, removed_low_quality, removed_correlated)
+    if len(model_df) > 50_000:
+        model_df = model_df.sample(n=50_000, random_state=random_state)
 
     X = model_df[kept].to_numpy(dtype=float)
     y = model_df[target_column].to_numpy()
@@ -84,17 +90,17 @@ def select_features(
         rank_frames.append(_rank_from_scores(kept, np.abs(elastic[-1].coef_), "elastic_net"))
         rank_frames.append(_rank_from_scores(kept, np.abs(ridge[-1].coef_), "ridge"))
         mi = mutual_info_regression(X, y, random_state=random_state)
-        aux_model: Any = RandomForestRegressor(n_estimators=120, min_samples_leaf=5, random_state=random_state, n_jobs=1)
+        aux_model: Any = RandomForestRegressor(n_estimators=80, min_samples_leaf=5, random_state=random_state, n_jobs=1)
         scoring = "neg_mean_absolute_error"
     else:
         l1 = make_pipeline(
             StandardScaler(),
             LogisticRegression(
                 penalty="l1",
-                solver="liblinear",
+                solver="saga",
                 C=0.2,
                 random_state=random_state,
-                max_iter=2000,
+                max_iter=800,
             ),
         )
         elastic_lr = make_pipeline(
@@ -105,7 +111,7 @@ def select_features(
                 l1_ratio=0.5,
                 C=0.2,
                 random_state=random_state,
-                max_iter=3000,
+                max_iter=800,
             ),
         )
         ridge_lr = make_pipeline(
@@ -115,7 +121,7 @@ def select_features(
                 solver="lbfgs",
                 C=0.2,
                 random_state=random_state,
-                max_iter=2000,
+                max_iter=800,
             ),
         )
         l1.fit(X, y.astype(int))
@@ -129,7 +135,7 @@ def select_features(
         rank_frames.append(_rank_from_scores(kept, ridge_coef, "ridge"))
         mi = mutual_info_classif(X, y.astype(int), random_state=random_state)
         aux_model = RandomForestClassifier(
-            n_estimators=160,
+            n_estimators=80,
             min_samples_leaf=5,
             class_weight="balanced_subsample",
             random_state=random_state,
@@ -142,7 +148,10 @@ def select_features(
     rank_frames.append(_rank_from_scores(kept, aux_model.feature_importances_, "tree"))
 
     try:
-        perm = permutation_importance(aux_model, X, y, n_repeats=5, random_state=random_state, scoring=scoring, n_jobs=1)
+        permutation_size = min(10_000, len(X))
+        permutation_X = X[:permutation_size]
+        permutation_y = y[:permutation_size]
+        perm = permutation_importance(aux_model, permutation_X, permutation_y, n_repeats=2, random_state=random_state, scoring=scoring, n_jobs=1)
         rank_frames.append(_rank_from_scores(kept, perm.importances_mean, "permutation"))
     except Exception:
         pass
