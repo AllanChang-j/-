@@ -35,6 +35,8 @@ validation:
   train_window: 252
   validation_window: 63
   step_size: 63
+  purge: 5
+  embargo: 5
   expanding: true
 
 training:
@@ -97,6 +99,8 @@ backtest:
   long_threshold: 0.55
   short_threshold: 0.45
   allow_short: false
+  allow_overlap_positions: false
+  return_column: execution_return
 
 reports:
   export_csv: true

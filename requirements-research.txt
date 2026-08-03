@@ -16,3 +16,4 @@ lightgbm>=4.3
 optuna>=3.6
 shap>=0.45
 tensorboard>=2.16
+pytest>=8.0

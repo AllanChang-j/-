@@ -17,8 +17,15 @@ def add_prediction_labels(
     neutral_threshold: float = 0.01,
 ) -> pd.DataFrame:
     labeled = df.sort_values(["symbol", "date"]).copy()
-    future_price = labeled.groupby("symbol")[price_column].shift(-horizon)
+    grouped = labeled.groupby("symbol")
+    future_price = grouped[price_column].shift(-horizon)
     labeled["future_return"] = future_price / labeled[price_column] - 1
+    labeled["signal_date"] = labeled["date"]
+    labeled["entry_date"] = grouped["date"].shift(-1)
+    labeled["exit_date"] = grouped["date"].shift(-(horizon + 1))
+    labeled["entry_price"] = grouped["open"].shift(-1)
+    labeled["exit_price"] = grouped["open"].shift(-(horizon + 1))
+    labeled["execution_return"] = labeled["exit_price"] / labeled["entry_price"] - 1
 
     if task == "binary":
         labeled["target"] = (labeled["future_return"] > 0).astype(float)
@@ -44,4 +51,3 @@ def num_classes(task: TaskType) -> int:
     if task == "regression":
         return 1
     raise ValueError(f"Unsupported task: {task}")
-

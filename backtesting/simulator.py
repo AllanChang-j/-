@@ -20,6 +20,8 @@ class BacktestConfig:
     long_threshold: float = 0.55
     short_threshold: float = 0.45
     allow_short: bool = False
+    allow_overlap_positions: bool = False
+    return_column: str = "execution_return"
 
 
 def _annualized_return(equity: pd.Series) -> float:
@@ -47,18 +49,29 @@ def _profit_factor(trade_returns: pd.Series) -> float:
 def backtest_predictions(prediction_frame: pd.DataFrame, config: BacktestConfig) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
     frame = prediction_frame.copy()
     frame["date"] = pd.to_datetime(frame["date"])
+    frame["entry_date"] = pd.to_datetime(frame.get("entry_date", frame["date"]))
+    frame["exit_date"] = pd.to_datetime(frame.get("exit_date", frame["date"]))
     if "score" not in frame.columns:
         frame["score"] = frame["signal"].astype(float)
-    frame = frame.dropna(subset=["future_return"]).sort_values(["date", "score"], ascending=[True, False])
+    return_column = config.return_column if config.return_column in frame.columns else "future_return"
+    frame = frame.dropna(subset=[return_column, "entry_date", "exit_date"]).sort_values(["date", "score"], ascending=[True, False])
 
     cash = float(config.initial_cash)
     equity_records = []
     trades = []
+    active_until: dict[str, pd.Timestamp] = {}
     slippage = config.slippage_bps / 10_000
     cost_in = config.commission_rate + slippage
     cost_out = config.commission_rate + config.tax_rate + slippage
 
     for date, daily in frame.groupby("date", sort=True):
+        if not config.allow_overlap_positions:
+            daily = daily[
+                daily.apply(
+                    lambda row: pd.Timestamp(row["entry_date"]) > active_until.get(str(row["symbol"]), pd.Timestamp.min),
+                    axis=1,
+                )
+            ]
         long_candidates = daily[daily["signal"] > 0].head(config.max_positions)
         short_candidates = daily[daily["signal"] < 0].head(config.max_positions) if config.allow_short else daily.iloc[0:0]
         candidates = pd.concat([long_candidates, short_candidates], axis=0)
@@ -71,20 +84,24 @@ def backtest_predictions(prediction_frame: pd.DataFrame, config: BacktestConfig)
         day_pnl = 0.0
         for _, row in candidates.iterrows():
             direction = 1 if row["signal"] > 0 else -1
-            gross_return = float(row["future_return"]) * direction
+            gross_return = float(row[return_column]) * direction
             gross_return = max(gross_return, -config.stop_loss)
             gross_return = min(gross_return, config.take_profit)
             net_return = gross_return - cost_in - cost_out
             pnl = allocation * net_return
             day_pnl += pnl
+            active_until[str(row["symbol"])] = pd.Timestamp(row["exit_date"])
             trades.append(
                 {
-                    "entry_date": date,
+                    "signal_date": date,
+                    "entry_date": row["entry_date"],
+                    "exit_date": row["exit_date"],
                     "symbol": row["symbol"],
                     "name": row.get("name", row["symbol"]),
                     "direction": "long" if direction > 0 else "short",
                     "score": row.get("score"),
                     "future_return": row["future_return"],
+                    "execution_return": row.get("execution_return", row["future_return"]),
                     "net_return": net_return,
                     "pnl": pnl,
                     "capital": allocation,

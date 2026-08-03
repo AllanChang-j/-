@@ -57,6 +57,23 @@ python main.py \
   --output-dir experiments/taiwan_daily_v1
 ```
 
+Collect historical data with the stage-1 official source code:
+
+```bash
+python data/collect_stage1_history.py \
+  --start 2024-01-01 \
+  --end 2026-07-31 \
+  --output data/raw/taiwan_daily_ohlcv.csv
+```
+
+This collector reuses `src/stage1_close_report.py` source configuration and parsers. It outputs a research-ready long table:
+
+```text
+date,symbol,name,market,open,high,low,close,adjusted_close,volume,amount
+```
+
+The original Excel report is not used directly as the model training table. The Excel file is a daily reporting surface; the model should train on a multi-year historical long table.
+
 Change task or horizon:
 
 ```bash
@@ -75,6 +92,9 @@ The pipeline follows these rules:
 - Train/validation/test splits are by date and never shuffled.
 - Feature selection is fitted only on the training period.
 - Imputation and scaling are fitted only on the training period.
+- Cross-validation performs feature selection, imputation, and scaling independently inside each fold.
+- Fold boundaries apply purge and embargo windows. Default purge/embargo equals the prediction horizon.
+- Validation and test windows may use prior known history as input context, but the target row must belong to validation/test.
 - Cross-validation excludes the final unseen test period.
 
 ## Feature Engineering
@@ -115,7 +135,7 @@ figures/feature_importance.png
 
 ### CNN
 
-Default is 1D CNN over time:
+Default is temporal 1D CNN over numeric time-series features:
 
 - Conv1D
 - ReLU
@@ -124,7 +144,7 @@ Default is 1D CNN over time:
 - Dropout
 - Dense output head
 
-The code also includes a `candlestick_image` CNN variant that treats the window as a 2D time-feature image.
+The code also includes an experimental `candlestick_image` CNN variant that treats the window as a 2D time-feature image. Unless this variant is explicitly used, reports should describe the model as Temporal 1D CNN, not Candlestick Image CNN.
 
 ### LSTM
 
@@ -149,6 +169,8 @@ Encoder-only time-series Transformer:
 ### LightGBM
 
 LightGBM is the fourth model and the critical financial baseline. It uses the same sliding-window dataset flattened into tabular features. If `lightgbm` is not installed, the framework falls back to sklearn `HistGradientBoosting` and records that backend in `best_params.json`.
+
+Fallback results must not be reported as LightGBM. Reports use `lightgbm` only when the actual LightGBM package is available; otherwise the model is named `sklearn_hist_gradient_boosting_fallback`.
 
 ## Validation
 
@@ -181,6 +203,8 @@ The simulator supports:
 - take profit
 - maximum positions
 - long-only or optional short mode
+- fixed-horizon execution return
+- non-overlapping positions per stock by default
 
 Outputs:
 
@@ -192,6 +216,8 @@ figures/<model>/equity_curve.png
 figures/<model>/rolling_sharpe.png
 figures/<model>/rolling_drawdown.png
 ```
+
+For a target generated at time `t`, the signal is assumed to be available only after the `t` close. Backtesting therefore uses `execution_return`, defined as entry at `t+1` open and exit at `t+h+1` open by default. This avoids using the same day close as an executable price.
 
 ## Reports
 
@@ -242,5 +268,7 @@ The framework exports:
 - validation-to-test generalization gaps
 - overfitting risk labels based on F1 gap
 - threshold sensitivity analysis for classification trading signals
+- Newey-West corrected Diebold-Mariano tests
+- block bootstrap mean-difference tests
 
 These tables are intended to answer the practical research question: whether CNN, LSTM, or Transformer complexity adds value beyond the LightGBM baseline.

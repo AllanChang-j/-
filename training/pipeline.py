@@ -113,6 +113,7 @@ def prepare_window_data(
     test_df: pd.DataFrame,
     candidate_columns: list[str],
     config: dict[str, Any],
+    full_df: pd.DataFrame | None = None,
 ) -> tuple[WindowDataset, WindowDataset, WindowDataset, FeatureSelectionResult]:
     feature_cfg = config.get("features", {})
     selection = select_features(
@@ -127,14 +128,16 @@ def prepare_window_data(
     preprocessor = TabularPreprocessor(scale=bool(config.get("dataset", {}).get("scale_features", True)))
     preprocessor.fit(train_df, selection.selected_features)
     train_processed = preprocessor.transform(train_df)
-    validation_processed = preprocessor.transform(validation_df)
-    test_processed = preprocessor.transform(test_df)
+    full_processed = preprocessor.transform(full_df if full_df is not None else pd.concat([train_df, validation_df, test_df], axis=0))
     sequence_length = int(config.get("dataset", {}).get("sequence_length", 30))
     price_column = str(config.get("data", {}).get("price_column", "adjusted_close"))
+    train_dates = set(pd.to_datetime(train_df["date"]).unique())
+    validation_dates = set(pd.to_datetime(validation_df["date"]).unique())
+    test_dates = set(pd.to_datetime(test_df["date"]).unique())
     return (
-        make_sliding_windows(train_processed, selection.selected_features, sequence_length, price_column=price_column),
-        make_sliding_windows(validation_processed, selection.selected_features, sequence_length, price_column=price_column),
-        make_sliding_windows(test_processed, selection.selected_features, sequence_length, price_column=price_column),
+        make_sliding_windows(train_processed, selection.selected_features, sequence_length, price_column=price_column, target_dates=train_dates),
+        make_sliding_windows(full_processed, selection.selected_features, sequence_length, price_column=price_column, target_dates=validation_dates),
+        make_sliding_windows(full_processed, selection.selected_features, sequence_length, price_column=price_column, target_dates=test_dates),
         selection,
     )
 
@@ -222,7 +225,7 @@ def run_lightgbm_experiment(
         probabilities = wrapper.predict_proba(X)
         inference_time = time.perf_counter() - start_infer
         result = PredictionResult(
-            model_name="lightgbm",
+            model_name=wrapper.backend,
             predictions=np.asarray(predictions),
             probabilities=probabilities,
             targets=dataset.y,
@@ -230,7 +233,7 @@ def run_lightgbm_experiment(
             training_time_sec=training_time,
             inference_time_sec=inference_time,
             model_size_bytes=size,
-            params={**model_config, "backend": wrapper.backend},
+            params={**model_config, "backend": wrapper.backend, "flatten_feature_names": train_data.flatten_feature_names()},
         )
         result.metrics = evaluate_predictions(result.targets, result.predictions, result.probabilities, task)
         return result
@@ -242,6 +245,9 @@ def _validation_splits(frame: pd.DataFrame, config: dict[str, Any]):
     validation_cfg = config.get("validation", {})
     method = str(validation_cfg.get("method", "walk_forward"))
     dates = pd.to_datetime(frame["date"]).unique()
+    default_horizon = int(config.get("labels", {}).get("horizon", 1))
+    purge = int(validation_cfg.get("purge", default_horizon))
+    embargo = int(validation_cfg.get("embargo", default_horizon))
     if method == "rolling_window":
         return rolling_window_splits(
             dates,
@@ -249,9 +255,11 @@ def _validation_splits(frame: pd.DataFrame, config: dict[str, Any]):
             train_window=int(validation_cfg.get("train_window", 252)),
             validation_window=int(validation_cfg.get("validation_window", 63)),
             step_size=int(validation_cfg.get("step_size", 63)),
+            purge=purge,
+            embargo=embargo,
         )
     if method == "time_series_split":
-        return sklearn_time_series_splits(dates, n_splits=int(validation_cfg.get("n_splits", 3)))
+        return sklearn_time_series_splits(dates, n_splits=int(validation_cfg.get("n_splits", 3)), purge=purge)
     return walk_forward_splits(
         dates,
         n_splits=int(validation_cfg.get("n_splits", 3)),
@@ -259,6 +267,8 @@ def _validation_splits(frame: pd.DataFrame, config: dict[str, Any]):
         validation_window=int(validation_cfg.get("validation_window", 63)),
         step_size=int(validation_cfg.get("step_size", 63)),
         expanding=bool(validation_cfg.get("expanding", True)),
+        purge=purge,
+        embargo=embargo,
     )
 
 
@@ -281,6 +291,7 @@ def run_cross_validation(
                 fold_validation,
                 candidate_columns,
                 config,
+                full_df=cv_frame[pd.to_datetime(cv_frame["date"]) <= pd.to_datetime(split.validation_dates[-1])].copy(),
             )
         except ValueError:
             continue
@@ -306,7 +317,7 @@ def run_cross_validation(
                     )
                 else:
                     continue
-                row = flatten_metrics(model_name, validation_result.metrics)
+                row = flatten_metrics(validation_result.model_name, validation_result.metrics)
                 row["fold"] = split.name
                 row["train_start"] = str(split.train_dates[0])
                 row["train_end"] = str(split.train_dates[-1])
@@ -324,7 +335,7 @@ def run_cross_validation(
     if not cv_results.empty:
         numeric = cv_results.select_dtypes(include=[np.number]).columns.tolist()
         if numeric:
-            summary = cv_results.groupby("model")[numeric].agg(["mean", "std"])
+            summary = cv_results.groupby("model")[numeric].agg(["mean", "std", "median", "min", "max"])
             summary.columns = [f"{metric}_{stat}" for metric, stat in summary.columns]
             summary.reset_index().to_csv(output_dir / "reports" / "cross_validation_summary.csv", index=False)
     return cv_results
@@ -334,12 +345,14 @@ def run_full_experiment(df: pd.DataFrame, config: dict[str, Any]) -> dict[str, A
     output_dir = ensure_dir(config.get("experiment", {}).get("output_dir", "experiments/default"))
     set_global_seed(int(config.get("experiment", {}).get("seed", 42)))
     research_frame, candidate_columns = prepare_research_frame(df, config)
+    purge = int(config.get("validation", {}).get("purge", config.get("labels", {}).get("horizon", 1)))
     train_df, validation_df, test_df = split_frame_by_dates(
         research_frame,
         validation_size=float(config.get("dataset", {}).get("validation_size", 0.2)),
         test_size=float(config.get("dataset", {}).get("test_size", 0.2)),
+        purge=purge,
     )
-    train_data, validation_data, test_data, selection = prepare_window_data(train_df, validation_df, test_df, candidate_columns, config)
+    train_data, validation_data, test_data, selection = prepare_window_data(train_df, validation_df, test_df, candidate_columns, config, full_df=research_frame)
 
     save_json(
         {
@@ -377,14 +390,15 @@ def run_full_experiment(df: pd.DataFrame, config: dict[str, Any]) -> dict[str, A
 
         prediction_frame = _prediction_frame(test_result, task, long_threshold=backtest_config.long_threshold)
         equity, trades, backtest_metrics = backtest_predictions(prediction_frame, backtest_config)
+        report_model_name = test_result.model_name
         if task != "regression":
             for threshold in [0.45, 0.50, 0.55, 0.60, 0.65]:
                 threshold_frame = _prediction_frame(test_result, task, long_threshold=threshold)
                 _equity_s, _trades_s, sensitivity_metrics = backtest_predictions(threshold_frame, backtest_config)
-                sensitivity_rows.append({"model": model_name, "long_threshold": threshold, **sensitivity_metrics})
+                sensitivity_rows.append({"model": report_model_name, "long_threshold": threshold, **sensitivity_metrics})
         write_model_reports(
             output_dir=Path(output_dir) / "reports",
-            model_name=model_name,
+            model_name=report_model_name,
             validation_metrics=validation_result.metrics,
             test_metrics=test_result.metrics,
             backtest_metrics=backtest_metrics,
@@ -395,21 +409,21 @@ def run_full_experiment(df: pd.DataFrame, config: dict[str, Any]) -> dict[str, A
             params=test_result.params,
         )
 
-        figure_dir = Path(output_dir) / "figures" / model_name
-        plot_learning_curve(test_result.history, figure_dir / "learning_curve.png", f"{model_name} learning curve")
+        figure_dir = Path(output_dir) / "figures" / report_model_name
+        plot_learning_curve(test_result.history, figure_dir / "learning_curve.png", f"{report_model_name} learning curve")
         if task != "regression":
-            plot_confusion(test_result.targets, test_result.predictions, figure_dir / "confusion_matrix.png", model_name)
-            plot_roc_pr(test_result.targets, test_result.probabilities, figure_dir / "roc.png", figure_dir / "pr.png", model_name)
-        plot_prediction_vs_truth(test_result.meta, test_result.targets, test_result.predictions, figure_dir / "prediction_vs_truth.png", model_name)
-        plot_equity_curve(equity, figure_dir / "equity_curve.png", f"{model_name} equity curve")
+            plot_confusion(test_result.targets, test_result.predictions, figure_dir / "confusion_matrix.png", report_model_name)
+            plot_roc_pr(test_result.targets, test_result.probabilities, figure_dir / "roc.png", figure_dir / "pr.png", report_model_name)
+        plot_prediction_vs_truth(test_result.meta, test_result.targets, test_result.predictions, figure_dir / "prediction_vs_truth.png", report_model_name)
+        plot_equity_curve(equity, figure_dir / "equity_curve.png", f"{report_model_name} equity curve")
         plot_rolling_risk(equity, figure_dir / "rolling_sharpe.png", figure_dir / "rolling_drawdown.png")
 
-        validation_rows.append(flatten_metrics(model_name, validation_result.metrics))
-        test_rows.append(flatten_metrics(model_name, test_result.metrics))
-        backtest_rows.append(flatten_metrics(model_name, backtest_metrics))
+        validation_rows.append(flatten_metrics(report_model_name, validation_result.metrics))
+        test_rows.append(flatten_metrics(report_model_name, test_result.metrics))
+        backtest_rows.append(flatten_metrics(report_model_name, backtest_metrics))
         speed_rows.append(
             {
-                "model": model_name,
+                "model": report_model_name,
                 "training_time_sec": test_result.training_time_sec,
                 "inference_time_sec": test_result.inference_time_sec,
                 "model_size_bytes": test_result.model_size_bytes,
@@ -417,9 +431,9 @@ def run_full_experiment(df: pd.DataFrame, config: dict[str, Any]) -> dict[str, A
                 "params": test_result.params,
             }
         )
-        errors_by_model[model_name] = _classification_errors(test_result, task)
+        errors_by_model[report_model_name] = _classification_errors(test_result, task)
 
-    statistical_tests = paired_tests(errors_by_model)
+    statistical_tests = paired_tests(errors_by_model, horizon=int(config.get("labels", {}).get("horizon", 1)))
     summary = write_comparison_report(
         output_dir=Path(output_dir) / "reports",
         validation_rows=validation_rows,
