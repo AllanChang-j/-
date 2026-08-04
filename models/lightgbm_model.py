@@ -30,7 +30,7 @@ class LightGBMWrapper:
             if self.task == "regression":
                 self.model = lgb.LGBMRegressor(**params)
             else:
-                objective = "binary" if len(np.unique(y)) <= 2 else "multiclass"
+                objective = str(params.pop("objective", "binary" if len(np.unique(y)) <= 2 else "multiclass"))
                 self.model = lgb.LGBMClassifier(objective=objective, **params)
             self.backend = "lightgbm"
             fit_kwargs: dict[str, Any] = {}

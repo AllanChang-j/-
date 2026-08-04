@@ -36,10 +36,55 @@ def write_model_reports(
     save_json(backtest_metrics, model_dir / "backtest_metrics.json")
     save_json(params, model_dir / "best_params.json")
     predictions.to_csv(model_dir / "predictions.csv", index=False)
+    trend_indicator = build_trend_indicator_table(predictions)
+    if not trend_indicator.empty:
+        trend_indicator.to_csv(model_dir / "trend_indicator.csv", index=False)
     equity.to_csv(model_dir / "equity_curve.csv", index=False)
     trades.to_csv(model_dir / "trades.csv", index=False)
     if history:
         pd.DataFrame(history).to_csv(model_dir / "learning_curve.csv", index=False)
+
+
+def build_trend_indicator_table(predictions: pd.DataFrame) -> pd.DataFrame:
+    if predictions.empty:
+        return pd.DataFrame()
+    frame = predictions.copy()
+    output = pd.DataFrame()
+    for column in ["date", "symbol", "name", "market", "close", "future_return", "execution_return"]:
+        if column in frame.columns:
+            output[column] = frame[column]
+    if "prob_1" in frame.columns:
+        prob_up = pd.to_numeric(frame["prob_1"], errors="coerce")
+        output["trend_score"] = prob_up
+        output["prob_up"] = prob_up
+        output["trend_strength"] = (prob_up - 0.5).abs() * 2
+        output["trend_label"] = pd.cut(
+            prob_up,
+            bins=[-float("inf"), 0.45, 0.55, float("inf")],
+            labels=["down", "neutral", "up"],
+        ).astype(str)
+    elif "prediction" in frame.columns:
+        prediction = pd.to_numeric(frame["prediction"], errors="coerce")
+        output["trend_score"] = prediction
+        output["predicted_future_return"] = prediction
+        output["trend_strength"] = prediction.abs()
+        output["trend_label"] = pd.cut(
+            prediction,
+            bins=[-float("inf"), -0.005, 0.005, float("inf")],
+            labels=["down", "neutral", "up"],
+        ).astype(str)
+    if "target" in frame.columns:
+        output["target"] = frame["target"]
+    if "date" in output.columns and "trend_score" in output.columns:
+        grouped_score = output.groupby("date")["trend_score"]
+        output["daily_trend_percentile"] = grouped_score.rank(method="average", pct=True)
+        output["daily_rank"] = grouped_score.rank(method="first", ascending=False).astype(int)
+        output["daily_trend_label"] = pd.cut(
+            output["daily_trend_percentile"],
+            bins=[-float("inf"), 0.2, 0.8, float("inf")],
+            labels=["down", "neutral", "up"],
+        ).astype(str)
+    return output
 
 
 def write_comparison_report(

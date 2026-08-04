@@ -154,7 +154,23 @@ experiments/quick_ta_regression_deep_h5_seq20/reports/lstm/predictions.csv
 experiments/quick_ta_regression_deep_h5_seq20/reports/transformer/predictions.csv
 
 
-17. Important output paths
+17. Daily LightGBM 40-feature trend indicator
+--------------------------------------------
+
+Windows:
+
+.\.venv\Scripts\python.exe main.py --config config/daily_trend_lightgbm_40.yaml
+
+macOS / Linux:
+
+python main.py --config config/daily_trend_lightgbm_40.yaml
+
+Key output for daily table:
+
+experiments/daily_trend_lightgbm_40_h5/reports/lightgbm/trend_indicator.csv
+
+
+18. Important output paths
 --------------------------
 
 Level 1:
@@ -170,7 +186,7 @@ LightGBM Top 40 / 80 / 120 summary:
 experiments/lab_lightgbm_top_feature_summary.csv
 
 
-18. Common fixes
+19. Common fixes
 ----------------
 
 PowerShell says "git is not recognized":
@@ -200,7 +216,7 @@ PyTorch CUDA is missing:
 .\.venv\Scripts\python.exe -m pip install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 
-19. Logs
+20. Logs
 --------
 
 Windows one-click logs:

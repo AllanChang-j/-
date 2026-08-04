@@ -118,7 +118,19 @@ def prepare_window_data(
     full_df: pd.DataFrame | None = None,
 ) -> tuple[WindowDataset, WindowDataset, WindowDataset, FeatureSelectionResult]:
     feature_cfg = config.get("features", {})
-    if str(feature_cfg.get("selection_method", "ensemble")) == "none":
+    configured_features = [str(column) for column in feature_cfg.get("selected_features", [])]
+    if configured_features:
+        missing = [column for column in configured_features if column not in candidate_columns]
+        if missing:
+            raise ValueError(f"Configured selected_features are missing from candidate features: {missing}")
+        selected = configured_features[: int(feature_cfg.get("max_features", len(configured_features)))]
+        selection = FeatureSelectionResult(
+            selected_features=selected,
+            ranking=pd.DataFrame({"feature": selected, "aggregate_rank": np.arange(1, len(selected) + 1)}),
+            removed_low_quality=[],
+            removed_correlated=[],
+        )
+    elif str(feature_cfg.get("selection_method", "ensemble")) == "none":
         selected = candidate_columns[: int(feature_cfg.get("max_features", len(candidate_columns)))]
         selection = FeatureSelectionResult(
             selected_features=selected,
