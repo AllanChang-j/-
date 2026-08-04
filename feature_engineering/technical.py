@@ -209,7 +209,15 @@ def add_features_for_symbol(group: pd.DataFrame, windows: list[int], lag_windows
 
 
 def build_technical_features(df: pd.DataFrame, windows: list[int], lag_windows: list[int]) -> pd.DataFrame:
-    enriched = df.groupby("symbol", group_keys=False).apply(lambda group: add_features_for_symbol(group, windows, lag_windows))
+    parts: list[pd.DataFrame] = []
+    for symbol, group in df.sort_values(["symbol", "date"]).groupby("symbol", sort=False):
+        enriched_group = add_features_for_symbol(group.copy(), windows, lag_windows)
+        if "symbol" not in enriched_group.columns:
+            enriched_group["symbol"] = symbol
+        parts.append(enriched_group)
+    if not parts:
+        raise ValueError("No symbol groups were available for feature engineering.")
+    enriched = pd.concat(parts, axis=0, ignore_index=True)
     enriched = enriched.replace([np.inf, -np.inf], np.nan)
     return enriched.copy().reset_index(drop=True)
 

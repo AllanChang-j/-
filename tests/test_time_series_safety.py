@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from feature_engineering.build import build_feature_frame
 from preprocessing.windows import make_sliding_windows, split_frame_by_dates
 from validation.splitters import walk_forward_splits
 
@@ -48,3 +49,34 @@ def test_holdout_split_leaves_purge_gap_between_sets() -> None:
     assert validation_dates[-1] < test_dates[0]
     assert len(pd.bdate_range(train_dates[-1], validation_dates[0])) - 2 >= 3
     assert len(pd.bdate_range(validation_dates[-1], test_dates[0])) - 2 >= 3
+
+
+def test_feature_engineering_preserves_identifier_columns() -> None:
+    dates = pd.bdate_range("2024-01-01", periods=8)
+    rows = []
+    for symbol in ["A", "B"]:
+        for index, date in enumerate(dates):
+            close = 10 + index
+            rows.append(
+                {
+                    "date": date,
+                    "symbol": symbol,
+                    "name": symbol,
+                    "market": "T",
+                    "open": close - 0.1,
+                    "high": close + 0.2,
+                    "low": close - 0.2,
+                    "close": close,
+                    "adjusted_close": close,
+                    "volume": 1000 + index,
+                    "amount": (1000 + index) * close,
+                }
+            )
+    frame = pd.DataFrame(rows)
+
+    features, feature_columns = build_feature_frame(frame, {"features": {"windows": [3, 5], "lag_windows": [1]}})
+
+    for column in ["date", "symbol", "name", "market", "open", "adjusted_close"]:
+        assert column in features.columns
+    assert feature_columns
+    assert features["symbol"].notna().all()
