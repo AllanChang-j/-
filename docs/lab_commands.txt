@@ -131,7 +131,30 @@ macOS / Linux:
 python scripts/summarize_lab_lightgbm_top_features.py
 
 
-16. Important output paths
+16. Quick common-TA regression deep test
+---------------------------------------
+
+Windows:
+
+powershell -ExecutionPolicy Bypass -File scripts/run_quick_ta_regression_deep.ps1
+
+macOS / Linux:
+
+bash scripts/run_quick_ta_regression_deep.sh
+
+Direct command after environment is ready:
+
+python main.py --config config/quick_ta_regression_deep.yaml
+
+Output:
+
+experiments/quick_ta_regression_deep_h5_seq20/reports/test_comparison.csv
+experiments/quick_ta_regression_deep_h5_seq20/reports/cnn/predictions.csv
+experiments/quick_ta_regression_deep_h5_seq20/reports/lstm/predictions.csv
+experiments/quick_ta_regression_deep_h5_seq20/reports/transformer/predictions.csv
+
+
+17. Important output paths
 --------------------------
 
 Level 1:
@@ -147,7 +170,7 @@ LightGBM Top 40 / 80 / 120 summary:
 experiments/lab_lightgbm_top_feature_summary.csv
 
 
-17. Common fixes
+18. Common fixes
 ----------------
 
 PowerShell says "git is not recognized":
@@ -177,7 +200,7 @@ PyTorch CUDA is missing:
 .\.venv\Scripts\python.exe -m pip install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 
-18. Logs
+19. Logs
 --------
 
 Windows one-click logs:

@@ -118,15 +118,24 @@ def prepare_window_data(
     full_df: pd.DataFrame | None = None,
 ) -> tuple[WindowDataset, WindowDataset, WindowDataset, FeatureSelectionResult]:
     feature_cfg = config.get("features", {})
-    selection = select_features(
-        train_df=train_df,
-        feature_columns=candidate_columns,
-        task=_task(config),
-        max_features=int(feature_cfg.get("max_features", 120)),
-        min_non_null_ratio=float(feature_cfg.get("min_non_null_ratio", 0.85)),
-        correlation_threshold=float(feature_cfg.get("correlation_threshold", 0.96)),
-        random_state=int(config.get("experiment", {}).get("seed", 42)),
-    )
+    if str(feature_cfg.get("selection_method", "ensemble")) == "none":
+        selected = candidate_columns[: int(feature_cfg.get("max_features", len(candidate_columns)))]
+        selection = FeatureSelectionResult(
+            selected_features=selected,
+            ranking=pd.DataFrame({"feature": selected, "aggregate_rank": np.arange(1, len(selected) + 1)}),
+            removed_low_quality=[],
+            removed_correlated=[],
+        )
+    else:
+        selection = select_features(
+            train_df=train_df,
+            feature_columns=candidate_columns,
+            task=_task(config),
+            max_features=int(feature_cfg.get("max_features", 120)),
+            min_non_null_ratio=float(feature_cfg.get("min_non_null_ratio", 0.85)),
+            correlation_threshold=float(feature_cfg.get("correlation_threshold", 0.96)),
+            random_state=int(config.get("experiment", {}).get("seed", 42)),
+        )
     print(f"Selected features: count={len(selection.selected_features)}", flush=True)
 
     def compact_frame(frame: pd.DataFrame) -> pd.DataFrame:

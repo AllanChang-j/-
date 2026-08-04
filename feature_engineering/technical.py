@@ -222,6 +222,78 @@ def build_technical_features(df: pd.DataFrame, windows: list[int], lag_windows: 
     return enriched.copy().reset_index(drop=True)
 
 
+def add_common_ta_features_for_symbol(group: pd.DataFrame, lag_windows: list[int]) -> pd.DataFrame:
+    group = group.sort_values("date").copy()
+    close = group["adjusted_close"].astype(float)
+    raw_close = group["close"].astype(float)
+    high = group["high"].astype(float)
+    low = group["low"].astype(float)
+    open_price = group["open"].astype(float)
+    volume = group["volume"].astype(float)
+
+    group["daily_return"] = close.pct_change(fill_method=None)
+    group["weekly_return"] = close.pct_change(5, fill_method=None)
+    group["monthly_return"] = close.pct_change(20, fill_method=None)
+    group["log_return"] = np.log(close / close.shift(1))
+    group["intraday_return"] = raw_close / (open_price + EPS) - 1
+    group["high_low_range"] = (high - low) / (raw_close + EPS)
+    group["close_open_range"] = (raw_close - open_price) / (open_price + EPS)
+
+    for window in [5, 10, 20, 60]:
+        ma = close.rolling(window).mean()
+        ema = close.ewm(span=window, adjust=False).mean()
+        group[f"close_to_ma_{window}"] = close / (ma + EPS) - 1
+        group[f"close_to_ema_{window}"] = close / (ema + EPS) - 1
+
+    true_range = _true_range(high, low, raw_close)
+    group["atr_14"] = true_range.rolling(14).mean()
+    group["historical_volatility_20"] = group["log_return"].rolling(20).std() * np.sqrt(252)
+    ma_20 = close.rolling(20).mean()
+    std_20 = close.rolling(20).std()
+    group["bollinger_width_20"] = 4 * std_20 / (ma_20 + EPS)
+
+    group["rsi_14"] = _rsi(close, 14)
+    group["stochastic_14"] = _stochastic(close, high, low, 14)
+    ema_12 = close.ewm(span=12, adjust=False).mean()
+    ema_26 = close.ewm(span=26, adjust=False).mean()
+    group["macd"] = ema_12 - ema_26
+    group["macd_signal"] = group["macd"].ewm(span=9, adjust=False).mean()
+    group["macd_hist"] = group["macd"] - group["macd_signal"]
+    group["ppo"] = 100 * (ema_12 - ema_26) / (ema_26 + EPS)
+
+    group["volume_ma_20"] = volume.rolling(20).mean()
+    group["volume_ratio_20"] = volume / (group["volume_ma_20"] + EPS)
+    group["obv"] = _obv(raw_close, volume)
+    typical_price = (high + low + raw_close) / 3
+    vwap = (typical_price * volume).cumsum() / (volume.cumsum() + EPS)
+    group["close_to_vwap"] = raw_close / (vwap + EPS) - 1
+
+    lag_sources = ["daily_return", "weekly_return", "rsi_14", "macd_hist", "volume_ratio_20", "close_to_ma_20"]
+    for lag in lag_windows:
+        for source in lag_sources:
+            group[f"{source}_lag_{lag}"] = group[source].shift(lag)
+
+    group["weekday"] = group["date"].dt.weekday
+    group["month"] = group["date"].dt.month
+    group["quarter"] = group["date"].dt.quarter
+    group["is_month_end"] = group["date"].dt.is_month_end.astype(int)
+    return group
+
+
+def build_common_ta_features(df: pd.DataFrame, lag_windows: list[int]) -> pd.DataFrame:
+    parts: list[pd.DataFrame] = []
+    for symbol, group in df.sort_values(["symbol", "date"]).groupby("symbol", sort=False):
+        enriched_group = add_common_ta_features_for_symbol(group.copy(), lag_windows)
+        if "symbol" not in enriched_group.columns:
+            enriched_group["symbol"] = symbol
+        parts.append(enriched_group)
+    if not parts:
+        raise ValueError("No symbol groups were available for common TA feature engineering.")
+    enriched = pd.concat(parts, axis=0, ignore_index=True)
+    enriched = enriched.replace([np.inf, -np.inf], np.nan)
+    return enriched.copy().reset_index(drop=True)
+
+
 def candidate_feature_columns(df: pd.DataFrame) -> list[str]:
     non_features = {
         "date",
