@@ -6,6 +6,18 @@ It prepares the environment, installs research dependencies, verifies GPU and Li
 
 ## One Command From A Fresh Clone
 
+### Windows PowerShell, No Git Required
+
+Use this when the lab computer does not have Git or Bash:
+
+```powershell
+powershell -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri 'https://github.com/AllanChang-j/-/archive/refs/heads/master.zip' -OutFile 'stock-dashboard.zip'; if (Test-Path stock-dashboard) { Remove-Item stock-dashboard -Recurse -Force }; Expand-Archive -Path 'stock-dashboard.zip' -DestinationPath '.' -Force; Rename-Item -LiteralPath '.\--master' -NewName 'stock-dashboard'; Set-Location stock-dashboard; powershell -ExecutionPolicy Bypass -File scripts/lab_one_click_level1.ps1"
+```
+
+If the extracted folder already exists and Windows refuses to rename it, delete the old `stock-dashboard` folder and rerun the command.
+
+### macOS / Linux / Git Bash
+
 ```bash
 git clone https://github.com/AllanChang-j/-.git stock-dashboard && cd stock-dashboard && bash scripts/lab_one_click_level1.sh
 ```
@@ -73,10 +85,24 @@ python data/collect_stage1_history.py \
 
 ## Useful Overrides
 
+PowerShell examples use `-Parameter Value`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/lab_one_click_level1.ps1 -CollectIfMissing 0
+```
+
+Shell examples use environment variables.
+
 Use an existing data file:
 
 ```bash
 DATA_PATH=/path/to/taiwan_daily.csv bash scripts/lab_one_click_level1.sh
+```
+
+Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/lab_one_click_level1.ps1 -DataPath "C:\path\to\taiwan_daily.csv"
 ```
 
 Skip data collection and fail if the CSV is missing:
