@@ -104,6 +104,7 @@ def prepare_research_frame(df: pd.DataFrame, config: dict[str, Any]) -> tuple[pd
         task=_task(config),
         price_column=str(config.get("data", {}).get("price_column", "adjusted_close")),
         neutral_threshold=float(labels.get("neutral_threshold", 0.01)),
+        regression_target=str(labels.get("regression_target", "future_return")),
     )
     print(f"Added labels: rows={len(labeled)}", flush=True)
     return labeled, candidate_columns

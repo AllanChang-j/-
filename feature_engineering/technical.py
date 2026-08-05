@@ -230,11 +230,13 @@ def add_common_ta_features_for_symbol(group: pd.DataFrame, lag_windows: list[int
     low = group["low"].astype(float)
     open_price = group["open"].astype(float)
     volume = group["volume"].astype(float)
+    amount = group["amount"].astype(float) if "amount" in group else raw_close * volume
 
     group["daily_return"] = close.pct_change(fill_method=None)
     group["weekly_return"] = close.pct_change(5, fill_method=None)
     group["monthly_return"] = close.pct_change(20, fill_method=None)
     group["log_return"] = np.log(close / close.shift(1))
+    group["overnight_return"] = open_price / (raw_close.shift(1) + EPS) - 1
     group["intraday_return"] = raw_close / (open_price + EPS) - 1
     group["high_low_range"] = (high - low) / (raw_close + EPS)
     group["close_open_range"] = (raw_close - open_price) / (open_price + EPS)
@@ -242,18 +244,31 @@ def add_common_ta_features_for_symbol(group: pd.DataFrame, lag_windows: list[int
     for window in [5, 10, 20, 60]:
         ma = close.rolling(window).mean()
         ema = close.ewm(span=window, adjust=False).mean()
+        rolling_high = high.rolling(window).max()
+        rolling_low = low.rolling(window).min()
+        rolling_return = close / (close.shift(window) + EPS) - 1
         group[f"close_to_ma_{window}"] = close / (ma + EPS) - 1
         group[f"close_to_ema_{window}"] = close / (ema + EPS) - 1
+        group[f"rolling_return_{window}"] = rolling_return
+        group[f"high_position_{window}"] = close / (rolling_high + EPS) - 1
+        group[f"low_position_{window}"] = close / (rolling_low + EPS) - 1
+        group[f"range_position_{window}"] = (close - rolling_low) / (rolling_high - rolling_low + EPS)
+        group[f"rolling_drawdown_{window}"] = close / (rolling_high + EPS) - 1
 
     true_range = _true_range(high, low, raw_close)
     group["atr_14"] = true_range.rolling(14).mean()
+    group["atr_ratio_14"] = group["atr_14"] / (raw_close + EPS)
     group["historical_volatility_20"] = group["log_return"].rolling(20).std() * np.sqrt(252)
+    group["historical_volatility_60"] = group["log_return"].rolling(60).std() * np.sqrt(252)
     ma_20 = close.rolling(20).mean()
     std_20 = close.rolling(20).std()
     group["bollinger_width_20"] = 4 * std_20 / (ma_20 + EPS)
+    group["bollinger_z_20"] = (close - ma_20) / (std_20 + EPS)
 
     group["rsi_14"] = _rsi(close, 14)
+    group["rsi_30"] = _rsi(close, 30)
     group["stochastic_14"] = _stochastic(close, high, low, 14)
+    group["stochastic_30"] = _stochastic(close, high, low, 30)
     ema_12 = close.ewm(span=12, adjust=False).mean()
     ema_26 = close.ewm(span=26, adjust=False).mean()
     group["macd"] = ema_12 - ema_26
@@ -262,13 +277,26 @@ def add_common_ta_features_for_symbol(group: pd.DataFrame, lag_windows: list[int
     group["ppo"] = 100 * (ema_12 - ema_26) / (ema_26 + EPS)
 
     group["volume_ma_20"] = volume.rolling(20).mean()
+    group["volume_ratio_5"] = volume / (volume.rolling(5).mean() + EPS)
+    group["volume_ratio_10"] = volume / (volume.rolling(10).mean() + EPS)
     group["volume_ratio_20"] = volume / (group["volume_ma_20"] + EPS)
+    group["volume_ratio_60"] = volume / (volume.rolling(60).mean() + EPS)
+    group["amount_ratio_20"] = amount / (amount.rolling(20).mean() + EPS)
     group["obv"] = _obv(raw_close, volume)
     typical_price = (high + low + raw_close) / 3
     vwap = (typical_price * volume).cumsum() / (volume.cumsum() + EPS)
     group["close_to_vwap"] = raw_close / (vwap + EPS) - 1
 
-    lag_sources = ["daily_return", "weekly_return", "rsi_14", "macd_hist", "volume_ratio_20", "close_to_ma_20"]
+    lag_sources = [
+        "daily_return",
+        "weekly_return",
+        "rsi_14",
+        "macd_hist",
+        "volume_ratio_20",
+        "close_to_ma_20",
+        "range_position_20",
+        "rolling_drawdown_20",
+    ]
     for lag in lag_windows:
         for source in lag_sources:
             group[f"{source}_lag_{lag}"] = group[source].shift(lag)

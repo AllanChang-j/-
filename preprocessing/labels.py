@@ -15,6 +15,7 @@ def add_prediction_labels(
     task: TaskType = "binary",
     price_column: str = "adjusted_close",
     neutral_threshold: float = 0.01,
+    regression_target: str = "future_return",
 ) -> pd.DataFrame:
     labeled = df.sort_values(["symbol", "date"]).copy()
     grouped = labeled.groupby("symbol")
@@ -36,7 +37,10 @@ def add_prediction_labels(
             default=1,
         ).astype(float)
     elif task == "regression":
-        labeled["target"] = labeled["future_return"].astype(float)
+        if regression_target == "daily_future_return_percentile":
+            labeled["target"] = labeled.groupby("date")["future_return"].rank(method="average", pct=True).astype(float)
+        else:
+            labeled["target"] = labeled["future_return"].astype(float)
     else:
         raise ValueError(f"Unsupported task: {task}")
 

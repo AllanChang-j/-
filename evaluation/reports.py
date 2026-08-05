@@ -39,6 +39,9 @@ def write_model_reports(
     trend_indicator = build_trend_indicator_table(predictions)
     if not trend_indicator.empty:
         trend_indicator.to_csv(model_dir / "trend_indicator.csv", index=False)
+        bucket_report = build_trend_bucket_report(trend_indicator)
+        if not bucket_report.empty:
+            bucket_report.to_csv(model_dir / "trend_bucket_report.csv", index=False)
     equity.to_csv(model_dir / "equity_curve.csv", index=False)
     trades.to_csv(model_dir / "trades.csv", index=False)
     if history:
@@ -85,6 +88,100 @@ def build_trend_indicator_table(predictions: pd.DataFrame) -> pd.DataFrame:
             labels=["down", "neutral", "up"],
         ).astype(str)
     return output
+
+
+def build_trend_bucket_report(trend_indicator: pd.DataFrame) -> pd.DataFrame:
+    required = {"daily_trend_percentile", "future_return"}
+    if trend_indicator.empty or not required.issubset(trend_indicator.columns):
+        return pd.DataFrame()
+    frame = trend_indicator.copy()
+    frame["future_return"] = pd.to_numeric(frame["future_return"], errors="coerce")
+    rows: list[dict[str, Any]] = []
+    buckets = [
+        ("top_5", frame["daily_trend_percentile"] >= 0.95),
+        ("top_10", frame["daily_trend_percentile"] >= 0.90),
+        ("top_20", frame["daily_trend_percentile"] >= 0.80),
+        ("middle_60", frame["daily_trend_percentile"].between(0.20, 0.80, inclusive="neither")),
+        ("bottom_20", frame["daily_trend_percentile"] <= 0.20),
+        ("bottom_10", frame["daily_trend_percentile"] <= 0.10),
+        ("bottom_5", frame["daily_trend_percentile"] <= 0.05),
+    ]
+    for name, mask in buckets:
+        subset = frame.loc[mask & frame["future_return"].notna()]
+        if subset.empty:
+            continue
+        rows.append(
+            {
+                "bucket": name,
+                "sample_count": int(len(subset)),
+                "mean_future_return": float(subset["future_return"].mean()),
+                "median_future_return": float(subset["future_return"].median()),
+                "win_rate": float((subset["future_return"] > 0).mean()),
+                "mean_trend_score": float(subset["trend_score"].mean()) if "trend_score" in subset else None,
+            }
+        )
+    if "date" in frame.columns:
+        daily = frame.dropna(subset=["future_return", "daily_trend_percentile"]).copy()
+        if not daily.empty:
+            daily_ic = daily.groupby("date").apply(
+                lambda group: group["daily_trend_percentile"].corr(group["future_return"], method="spearman")
+                if len(group) > 2
+                else pd.NA
+            )
+            rows.append(
+                {
+                    "bucket": "daily_rank_ic",
+                    "sample_count": int(daily_ic.notna().sum()),
+                    "mean_future_return": float(daily_ic.dropna().mean()) if daily_ic.notna().any() else None,
+                    "median_future_return": float(daily_ic.dropna().median()) if daily_ic.notna().any() else None,
+                    "win_rate": float((daily_ic.dropna() > 0).mean()) if daily_ic.notna().any() else None,
+                    "mean_trend_score": None,
+                }
+            )
+            spread_rows = []
+            for _date, group in daily.groupby("date"):
+                top = group.loc[group["daily_trend_percentile"] >= 0.80, "future_return"]
+                bottom = group.loc[group["daily_trend_percentile"] <= 0.20, "future_return"]
+                if top.empty or bottom.empty:
+                    continue
+                spread_rows.append(
+                    {
+                        "top20_mean_minus_bottom20_mean": top.mean() - bottom.mean(),
+                        "top20_median_minus_bottom20_median": top.median() - bottom.median(),
+                        "top20_win_minus_bottom20_win": (top > 0).mean() - (bottom > 0).mean(),
+                    }
+                )
+            if spread_rows:
+                spread = pd.DataFrame(spread_rows)
+                rows.extend(
+                    [
+                        {
+                            "bucket": "daily_top20_minus_bottom20_mean",
+                            "sample_count": int(len(spread)),
+                            "mean_future_return": float(spread["top20_mean_minus_bottom20_mean"].mean()),
+                            "median_future_return": float(spread["top20_mean_minus_bottom20_mean"].median()),
+                            "win_rate": float((spread["top20_mean_minus_bottom20_mean"] > 0).mean()),
+                            "mean_trend_score": None,
+                        },
+                        {
+                            "bucket": "daily_top20_minus_bottom20_median",
+                            "sample_count": int(len(spread)),
+                            "mean_future_return": float(spread["top20_median_minus_bottom20_median"].mean()),
+                            "median_future_return": float(spread["top20_median_minus_bottom20_median"].median()),
+                            "win_rate": float((spread["top20_median_minus_bottom20_median"] > 0).mean()),
+                            "mean_trend_score": None,
+                        },
+                        {
+                            "bucket": "daily_top20_minus_bottom20_win_rate",
+                            "sample_count": int(len(spread)),
+                            "mean_future_return": float(spread["top20_win_minus_bottom20_win"].mean()),
+                            "median_future_return": float(spread["top20_win_minus_bottom20_win"].median()),
+                            "win_rate": float((spread["top20_win_minus_bottom20_win"] > 0).mean()),
+                            "mean_trend_score": None,
+                        },
+                    ]
+                )
+    return pd.DataFrame(rows)
 
 
 def write_comparison_report(

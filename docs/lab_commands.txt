@@ -170,7 +170,24 @@ Key output for daily table:
 experiments/daily_trend_lightgbm_40_h5/reports/lightgbm/trend_indicator.csv
 
 
-18. Important output paths
+18. Daily LightGBM Rank V2 indicator
+-----------------------------------
+
+Windows:
+
+.\.venv\Scripts\python.exe main.py --config config/daily_trend_lightgbm_rank_v2.yaml
+
+macOS / Linux:
+
+python main.py --config config/daily_trend_lightgbm_rank_v2.yaml
+
+Key outputs:
+
+experiments/daily_trend_lightgbm_rank_v2_h5/reports/lightgbm/trend_indicator.csv
+experiments/daily_trend_lightgbm_rank_v2_h5/reports/lightgbm/trend_bucket_report.csv
+
+
+19. Important output paths
 --------------------------
 
 Level 1:
@@ -186,7 +203,7 @@ LightGBM Top 40 / 80 / 120 summary:
 experiments/lab_lightgbm_top_feature_summary.csv
 
 
-19. Common fixes
+20. Common fixes
 ----------------
 
 PowerShell says "git is not recognized":
@@ -216,7 +233,7 @@ PyTorch CUDA is missing:
 .\.venv\Scripts\python.exe -m pip install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 
-20. Logs
+21. Logs
 --------
 
 Windows one-click logs:
