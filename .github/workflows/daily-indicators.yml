@@ -1,0 +1,68 @@
+name: Daily Stage 1 Indicators
+
+on:
+  schedule:
+    # 17:30 Asia/Taipei = 09:30 UTC. Weekdays only.
+    - cron: "30 9 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      trade_date:
+        description: "Optional trade date, YYYY-MM-DD. Leave blank for today in Asia/Taipei."
+        required: false
+        type: string
+
+jobs:
+  build-indicators:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Taipei
+      HISTORY_CACHE: data/raw/taiwan_daily_ohlcv_stage1.csv
+      OUTPUT_DIR: outputs/indicators
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Resolve trade date
+        id: dates
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.trade_date }}" ]; then
+            trade_date="${{ inputs.trade_date }}"
+          else
+            trade_date="$(TZ=Asia/Taipei date +%F)"
+          fi
+          echo "trade_date=$trade_date" >> "$GITHUB_OUTPUT"
+
+      - name: Restore indicator history cache
+        uses: actions/cache@v4
+        with:
+          path: data/raw
+          key: stage1-indicator-history-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            stage1-indicator-history-${{ runner.os }}-
+
+      - name: Generate daily indicators
+        run: |
+          python src/stage1_indicator_report.py \
+            --start 2024-01-01 \
+            --end "${{ steps.dates.outputs.trade_date }}" \
+            --output-start "${{ steps.dates.outputs.trade_date }}" \
+            --output-end "${{ steps.dates.outputs.trade_date }}" \
+            --history-cache "$HISTORY_CACHE" \
+            --output-dir "$OUTPUT_DIR"
+
+      - name: Upload indicator outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: indicators-${{ steps.dates.outputs.trade_date }}-${{ github.run_id }}
+          path: outputs/indicators/**
+          if-no-files-found: warn

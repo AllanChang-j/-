@@ -131,6 +131,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="產出每日收盤高低價、均價、均量指標。")
     parser.add_argument("--start", required=True, help="開始日期 YYYY-MM-DD")
     parser.add_argument("--end", required=True, help="結束日期 YYYY-MM-DD")
+    parser.add_argument("--output-start", help="只輸出此日期起的指標；省略時等於 --start")
+    parser.add_argument("--output-end", help="只輸出到此日期的指標；省略時等於 --end")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Stage 1 資料來源設定")
     parser.add_argument("--history-cache", default=str(DEFAULT_HISTORY_CACHE), help="歷史 OHLCV 快取 CSV")
     parser.add_argument("--seed-cache", help="既有歷史 OHLCV CSV；history-cache 不存在時可用它啟動")
@@ -162,6 +164,25 @@ def read_history(path: Path) -> pd.DataFrame:
         if column in df.columns:
             df[column] = pd.to_numeric(df[column], errors="coerce")
     return df
+
+
+def empty_dates_path(cache_path: Path) -> Path:
+    return cache_path.with_name(f"{cache_path.stem}_empty_dates.json")
+
+
+def read_empty_dates(cache_path: Path) -> set[dt.date]:
+    path = empty_dates_path(cache_path)
+    if not path.exists():
+        return set()
+    values = json.loads(path.read_text(encoding="utf-8"))
+    return {dt.date.fromisoformat(value) for value in values}
+
+
+def write_empty_dates(cache_path: Path, dates: set[dt.date]) -> None:
+    path = empty_dates_path(cache_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    values = sorted(day.isoformat() for day in dates)
+    path.write_text(json.dumps(values, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def normalize_records(day: dt.date, market: str, label: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -207,12 +228,14 @@ def collect_missing_history(
     include_esb_latest: bool,
     include_non_stock: bool,
     request_delay: float,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, set[dt.date]]:
     records: list[dict[str, Any]] = []
+    empty_days: set[dt.date] = set()
     today = dt.date.today()
     for day in missing_days:
         print(f"補抓 {day.isoformat()}")
         day_records = 0
+        network_errors = 0
         for source in load_sources(config_path, day):
             if not source.historical and not (include_esb_latest and day == today):
                 print(f"  {source.label}: skipped (latest-only source)")
@@ -220,6 +243,8 @@ def collect_missing_history(
             try:
                 rows = source_rows(source)
             except Exception as exc:
+                if "資料來源連線失敗" in str(exc):
+                    network_errors += 1
                 print(f"  {source.label}: skipped ({exc})")
                 continue
             if not include_non_stock:
@@ -231,7 +256,9 @@ def collect_missing_history(
             if request_delay > 0:
                 time.sleep(request_delay)
         print(f"  合計: {day_records} rows")
-    return pd.DataFrame(records)
+        if day_records == 0 and network_errors == 0:
+            empty_days.add(day)
+    return pd.DataFrame(records), empty_days
 
 
 def load_or_collect_history(args: argparse.Namespace, start: dt.date, end: dt.date) -> pd.DataFrame:
@@ -245,19 +272,21 @@ def load_or_collect_history(args: argparse.Namespace, start: dt.date, end: dt.da
         history = pd.DataFrame(columns=BASE_COLUMNS + ["adjusted_close"])
 
     cached_dates = set(history["date"].unique()) if not history.empty else set()
+    empty_dates = read_empty_dates(cache_path)
     context_start = start - dt.timedelta(days=max(args.context_days, 0))
     wanted_days = trading_weekdays(start, end)
-    missing_days = [day for day in wanted_days if day not in cached_dates]
+    missing_days = [day for day in wanted_days if day not in cached_dates and day not in empty_dates]
     if missing_days and args.offline:
         print(f"離線模式: 缺少 {len(missing_days)} 個平日資料，不補抓。")
     elif missing_days:
-        fresh = collect_missing_history(
+        fresh, fresh_empty_dates = collect_missing_history(
             missing_days,
             Path(args.config),
             args.include_esb_latest,
             args.include_non_stock,
             args.request_delay,
         )
+        empty_dates.update(fresh_empty_dates)
         if not fresh.empty:
             history = pd.concat([history, fresh], ignore_index=True)
 
@@ -277,6 +306,7 @@ def load_or_collect_history(args: argparse.Namespace, start: dt.date, end: dt.da
     )
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     history.assign(date=history["date"].astype(str)).to_csv(cache_path, index=False)
+    write_empty_dates(cache_path, empty_dates)
     return history[(history["date"] >= context_start) & (history["date"] <= end)].copy()
 
 
@@ -384,10 +414,12 @@ def write_daily_outputs(indicators: pd.DataFrame, output_root: Path, csv_only: b
 
 def write_summary(indicators: pd.DataFrame, output_root: Path, summary: dict[str, Any]) -> Path:
     summary_path = output_root / "run_summary.json"
+    date_start = "" if indicators.empty else str(indicators["日期"].min())
+    date_end = "" if indicators.empty else str(indicators["日期"].max())
     payload = {
         "rows": int(len(indicators)),
-        "date_start": str(indicators["日期"].min()),
-        "date_end": str(indicators["日期"].max()),
+        "date_start": date_start,
+        "date_end": date_end,
         "trading_days": summary["trading_days"],
         "written_files": summary["written_files"],
         "output_root": summary["output_root"],
@@ -396,6 +428,7 @@ def write_summary(indicators: pd.DataFrame, output_root: Path, summary: dict[str
             "不包含趨勢分數與綜合評分。",
             "興櫃官方來源目前設定為 latest-only，歷史區間預設不回補興櫃。",
             "百分比欄位以百分點表示，例如 -2.86 代表 -2.86%。",
+            "若 rows 為 0，通常代表指定輸出日期沒有官方收盤資料或為非交易日。",
         ],
     }
     summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -406,14 +439,20 @@ def main() -> None:
     args = parse_args()
     start = dt.date.fromisoformat(args.start)
     end = dt.date.fromisoformat(args.end)
+    output_start = dt.date.fromisoformat(args.output_start) if args.output_start else start
+    output_end = dt.date.fromisoformat(args.output_end) if args.output_end else end
     if end < start:
         raise ValueError("--end 不可早於 --start")
+    if output_end < output_start:
+        raise ValueError("--output-end 不可早於 --output-start")
+    if output_start < start or output_end > end:
+        raise ValueError("--output-start/--output-end 必須落在 --start 與 --end 之間")
     history = load_or_collect_history(args, start, end)
     print(f"歷史資料: rows={len(history)}, dates={history['date'].nunique()}, symbols={history['symbol'].nunique()}")
     indicators = build_indicators(history)
     indicators = indicators[
-        (pd.to_datetime(indicators["日期"]).dt.date >= start)
-        & (pd.to_datetime(indicators["日期"]).dt.date <= end)
+        (pd.to_datetime(indicators["日期"]).dt.date >= output_start)
+        & (pd.to_datetime(indicators["日期"]).dt.date <= output_end)
     ].copy()
     output_root = Path(args.output_dir)
     summary = write_daily_outputs(indicators, output_root, args.csv_only)
